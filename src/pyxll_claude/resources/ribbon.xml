@@ -1,0 +1,26 @@
+<!--
+  Ribbon XML for pyxll-claude.
+  Loaded via the pyxll:ribbon entry point and merged with any other ribbon XML
+  loaded by PyXLL. Uses the "pyxll" tab id to add the group to the existing
+  PyXLL ribbon tab.
+-->
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui"
+          loadImage="pyxll.load_image">
+    <ribbon>
+        <tabs>
+            <tab id="pyxll" label="PyXLL">
+                <group id="PyXLLClaude"
+                       label="Claude AI"
+                       insertAfterMso="TabHome">
+                    <button id="PyXLLClaudeOpenPane"
+                            size="large"
+                            label="Claude"
+                            image="pyxll_claude.resources:claude.png"
+                            screentip="Open Claude AI Terminal"
+                            supertip="Opens the Claude AI chat terminal in a side panel. Use it to ask questions, generate Python functions, and interact with your spreadsheet data."
+                            onAction="pyxll_claude.xl_functions.open_claude_pane"/>
+                </group>
+            </tab>
+        </tabs>
+    </ribbon>
+</customUI>

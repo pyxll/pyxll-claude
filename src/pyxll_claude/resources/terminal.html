@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <!--
+        xterm.js terminal for the pyxll-claude Claude AI task pane.
+        qwebchannel.js is served from Qt's internal resources (qrc:///).
+        xterm.js and the fit addon are loaded from jsDelivr CDN.
+        For offline use, replace the CDN <script> tags with bundled local copies.
+    -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; background: #1e1e1e; overflow: hidden; }
+        #terminal { position: absolute; inset: 0; padding: 4px; }
+    </style>
+</head>
+<body>
+    <div id="terminal"></div>
+
+    <!-- Qt WebChannel bridge (served from Qt internal resources) -->
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <!-- xterm.js terminal emulator -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <!-- Fit addon: calculates cols/rows from the container's pixel dimensions -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+
+    <script>
+        // Bridge reference kept at module scope so the ResizeObserver can use it
+        // even though the QWebChannel connects asynchronously.
+        let bridge = null;
+
+        const term = new Terminal({
+            windowsMode: true,  // stop xterm.js reflowing lines; defer to ConPTY's reflow
+            fontSize: 13,
+            fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
+            theme: {
+                background:  '#1e1e1e',
+                foreground:  '#d4d4d4',
+                cursor:      '#aeafad',
+                black:       '#1e1e1e',
+                red:         '#f44747',
+                green:       '#4ec9b0',
+                yellow:      '#dcdcaa',
+                blue:        '#569cd6',
+                magenta:     '#c678dd',
+                cyan:        '#9cdcfe',
+                white:       '#d4d4d4',
+                brightBlack: '#808080',
+            },
+            cursorBlink: true,
+            scrollback: 5000,
+            convertEol: false,
+        });
+
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal'));
+
+        // Resize xterm.js and notify the PTY in the same call so they are
+        // always in sync.  Claude's SIGWINCH redraw therefore always arrives
+        // into an xterm.js viewport that is already at the correct col count.
+        function resize() {
+            fitAddon.fit();
+            if (bridge) bridge.resizeTerminal(term.cols, term.rows);
+        }
+
+        // 150 ms debounce — fire once after the user stops dragging.
+        let resizeTimer = null;
+        const resizeObserver = new ResizeObserver(function() {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(resize, 150);
+        });
+        resizeObserver.observe(document.getElementById('terminal'));
+
+        // Connect to the Python TerminalBridge via Qt WebChannel
+        new QWebChannel(qt.webChannelTransport, function(channel) {
+            bridge = channel.objects.bridge;
+
+            // PTY output (base64) → xterm.js
+            bridge.outputReady.connect(function(b64) {
+                const bin = atob(b64);
+                const buf = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) {
+                    buf[i] = bin.charCodeAt(i);
+                }
+                term.write(buf);
+            });
+
+            // Keyboard input and paste → Python → PTY stdin
+            term.onData(function(data) {
+                bridge.receiveInput(data);
+            });
+
+            // Size the terminal to the pane and start the process.
+            fitAddon.fit();
+            bridge.startProcess(term.cols, term.rows);
+
+            term.focus();
+        });
+    </script>
+</body>
+</html>
