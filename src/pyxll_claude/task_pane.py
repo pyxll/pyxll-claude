@@ -74,6 +74,8 @@ class TerminalBridge(QObject):
         startProcess(cols, rows)   — validate workspace, initialise it, start claude
         receiveInput(text)         — forward keystrokes to the PTY
         resizeTerminal(cols, rows) — forward terminal resize to the PTY
+        copyToClipboard(text)      — write text to the system clipboard
+        pasteFromClipboard()       — return current system clipboard text
 
     Signals (emitted to JavaScript or connected within Python):
         outputReady(str)    — base64-encoded PTY output chunk → xterm.js
@@ -128,6 +130,16 @@ class TerminalBridge(QObject):
     def resizeTerminal(self, cols: int, rows: int):
         """Notify the PTY of a terminal size change."""
         self._process.resize(cols, rows)
+
+    @Slot(str)
+    def copyToClipboard(self, text: str):
+        """Write text to the system clipboard."""
+        QApplication.clipboard().setText(text)
+
+    @Slot(result=str)
+    def pasteFromClipboard(self) -> str:
+        """Return the current system clipboard text."""
+        return QApplication.clipboard().text()
 
     def _relay_output(self, data: bytes):
         self.outputReady.emit(base64.b64encode(data).decode("ascii"))

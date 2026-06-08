@@ -87,6 +87,27 @@
                 term.write(buf);
             });
 
+            // Intercept Ctrl+C / Ctrl+V for clipboard before xterm sees them.
+            // Ctrl+C: copy selection if present, otherwise fall through to SIGINT.
+            // Ctrl+V: paste from system clipboard via Qt bridge.
+            term.attachCustomKeyEventHandler(function(event) {
+                if (event.type !== 'keydown' || !event.ctrlKey) return true;
+                if (event.key === 'c') {
+                    const sel = term.getSelection();
+                    if (sel) {
+                        bridge.copyToClipboard(sel);
+                        return false;
+                    }
+                }
+                if (event.key === 'v') {
+                    bridge.pasteFromClipboard(function(text) {
+                        if (text) bridge.receiveInput(text);
+                    });
+                    return false;
+                }
+                return true;
+            });
+
             // Keyboard input and paste → Python → PTY stdin
             term.onData(function(data) {
                 bridge.receiveInput(data);
