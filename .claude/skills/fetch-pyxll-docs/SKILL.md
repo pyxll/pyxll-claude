@@ -16,8 +16,10 @@ Fetch the PyXLL documentation and use it as context for the current task.
    curl -s https://www.pyxll.com/llms.txt
    ```
 
-   The index contains a navigation guide at the top mapping common tasks to
-   sections, followed by page titles, descriptions, and URLs grouped by topic.
+   Read the **entire** output without truncating, piping to `head`, or
+   summarising. The index contains a navigation guide at the top mapping
+   common tasks to sections, followed by page titles, descriptions, and URLs
+   grouped by topic. Truncating it will cause you to miss relevant pages.
 
 2. Fetch the individual pages relevant to the task directly by their URL:
 
@@ -45,6 +47,13 @@ Fetch the PyXLL documentation and use it as context for the current task.
 - ALWAYS fetch these docs before writing any PyXLL-specific code.
 - Do NOT rely on training-data knowledge alone for PyXLL APIs — the docs are authoritative.
 - When writing `@xl_func` functions, check the type signature and argument type syntax from the docs.
-- Before using any PyXLL class, function, or decorator, fetch its API reference and 
-  use only what is explicitly documented. Never infer behaviour from conventions or 
-  assumptions — if it is not in the docs, do not use it.
+- Before writing any code that calls the Excel COM API (Range, Worksheet, Workbook, etc.),
+  fetch https://www.pyxll.com/docs/userguide/vba.md and read it in full. It documents
+  critical differences between VBA and Python — including how COM properties that take
+  arguments must be called as `Get<PropertyName>(args)` in Python rather than
+  `Property(args)` as in VBA.
+- Before using any PyXLL class, function, decorator, or configuration setting
+  (including pyxll.cfg section names and their keys), fetch the relevant documentation
+  and use only what is explicitly documented. Never infer behaviour, key names, or
+  parameter names from conventions or assumptions — if it is not in the docs, do not
+  use it.

@@ -18,6 +18,8 @@ import shutil
 import threading
 from pathlib import Path
 
+from winpty import PTY
+
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal
 
 _log = logging.getLogger(__name__)
@@ -170,23 +172,18 @@ class ClaudeProcess(QObject):
              up to 20 ms so user input and resize events are handled promptly.
           3. Drain all remaining queued commands before going back to read.
         """
-        from winpty import PTY
-
         claude = shutil.which("claude")
         if claude is None:
             _log.error("claude CLI not found on PATH")
             QCoreApplication.postEvent(self, _FinishedEvent())
             return
 
-        appname = (
-            f'cmd.exe /d /c "{claude}"'
-            if Path(claude).suffix.lower() in (".cmd", ".bat")
-            else claude
-        )
+        is_script = Path(claude).suffix.lower() in (".cmd", ".bat")
+        exe = f'cmd.exe /d /c "{claude}"' if is_script else claude
 
         pty = PTY(cols, rows)
         try:
-            pty.spawn(appname, cwd=str(workspace))
+            pty.spawn(exe, cwd=str(workspace))
 
             stop = False
             while not stop:

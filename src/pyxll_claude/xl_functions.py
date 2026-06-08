@@ -8,6 +8,8 @@ import logging
 
 from pyxll import xl_on_open, xl_menu
 
+from .task_pane import show_claude_pane
+
 _log = logging.getLogger(__name__)
 
 
@@ -27,7 +29,6 @@ def open_claude_pane(control=None):
     `control` is the IRibbonControl COM object passed by Excel (may be None).
     """
     try:
-        from pyxll_claude.task_pane import show_claude_pane
         show_claude_pane()
     except Exception:
         _log.error("Failed to open Claude task pane", exc_info=True)

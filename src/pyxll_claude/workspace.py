@@ -35,6 +35,17 @@ Your training-data knowledge of PyXLL is incomplete and may be wrong.
 The live documentation is the only authoritative source for decorator
 signatures, type annotations, and all other PyXLL-specific behaviour.
 
+## PyXLL MCP Tools
+
+Use these tools proactively — do not ask the user to perform these actions manually:
+
+- `pyxll_reload` — after every edit to `pyxll_claude_functions.py`, reload and rebind.
+- `pyxll_get_log` — whenever the user mentions the PyXLL log, asks about errors or
+  warnings, or wants to see recent PyXLL activity.
+- `pyxll_read_range(ref, sheet?)` — when the user asks to read or inspect cell values.
+- `pyxll_write_range(ref, values, sheet?)` — when the user asks to write data or
+  formulas into Excel cells.
+
 ## Writing Excel Functions
 
 All functions belong in `pyxll_claude_functions.py`.  Decorate them with `@xl_func`
@@ -49,15 +60,16 @@ def add_numbers(x: float, y: float) -> float:
     return x + y
 ```
 
-After writing or editing a function the user clicks **Load Functions** in
-the Claude AI task pane.  PyXLL calls `rebind()` internally, which re-scans
-`pyxll_claude_functions.py` and registers any new or changed `@xl_func` callables
-immediately — no Excel restart required.
+After writing or editing functions, call the `pyxll_reload` MCP tool to
+register them with Excel immediately.  If it returns an error, fix the
+error in `pyxll_claude_functions.py` and call `pyxll_reload` again.
+Repeat until it returns `OK`.  Do not ask the user to click **Load Functions**.
 
 ## Workspace context
 
 - User Excel functions: `pyxll_claude_functions.py` (in this workspace root)
-- Click **Load Functions** in the task pane to call `pyxll.rebind()` and register changes.
+- Use the `pyxll_reload` MCP tool to reload after edits.
+- The **Load Functions** button in the task pane is a manual fallback only.
 
 ## Workspace layout
 
@@ -72,8 +84,9 @@ CLAUDE.md                  ← this file
 
 ## Rules
 
-- After writing or editing functions in `pyxll_claude_functions.py`, remind the user to click
-  **Load Functions** in the Claude AI task pane to register them with Excel.
+- After writing or editing functions in `pyxll_claude_functions.py`, call the
+  `pyxll_reload` MCP tool. If it returns an error, fix it and call `pyxll_reload`
+  again. Repeat until it returns `OK`. Do not ask the user to click **Load Functions**.
 """
 
 _FETCH_SKILL_MD = """\
@@ -95,8 +108,10 @@ Fetch the PyXLL documentation and use it as context for the current task.
    curl -s https://www.pyxll.com/llms.txt
    ```
 
-   The index contains a navigation guide at the top mapping common tasks to
-   sections, followed by page titles, descriptions, and URLs grouped by topic.
+   Read the **entire** output without truncating, piping to `head`, or
+   summarising. The index contains a navigation guide at the top mapping
+   common tasks to sections, followed by page titles, descriptions, and URLs
+   grouped by topic. Truncating it will cause you to miss relevant pages.
 
 2. Fetch the individual pages relevant to the task directly by their URL:
 
@@ -124,9 +139,16 @@ Fetch the PyXLL documentation and use it as context for the current task.
 - ALWAYS fetch these docs before writing any PyXLL-specific code.
 - Do NOT rely on training-data knowledge alone for PyXLL APIs — the docs are authoritative.
 - When writing `@xl_func` functions, check the type signature and argument type syntax from the docs.
-- Before using any PyXLL class, function, or decorator, fetch its API reference and use
-  only what is explicitly documented. Never infer behaviour from conventions or assumptions —
-  if it is not in the docs, do not use it.
+- Before writing any code that calls the Excel COM API (Range, Worksheet, Workbook, etc.),
+  fetch https://www.pyxll.com/docs/userguide/vba.md and read it in full. It documents
+  critical differences between VBA and Python — including how COM properties that take
+  arguments must be called as `Get<PropertyName>(args)` in Python rather than
+  `Property(args)` as in VBA.
+- Before using any PyXLL class, function, decorator, or configuration setting
+  (including pyxll.cfg section names and their keys), fetch the relevant documentation
+  and use only what is explicitly documented. Never infer behaviour, key names, or
+  parameter names from conventions or assumptions — if it is not in the docs, do not
+  use it.
 """
 
 _SEARCH_SCRIPT_SH = """\
@@ -219,9 +241,17 @@ _SETTINGS_LOCAL_JSON = """\
       "Bash(*/search-pyxll-docs.sh*)",
       "Bash(curl -s https://www.pyxll.com/*)",
       "Read(pyxll_claude_functions.py)",
-      "Write(pyxll_claude_functions.py)"
+      "Write(pyxll_claude_functions.py)",
+      "mcp__pyxll__pyxll_reload",
+      "mcp__pyxll__pyxll_get_log",
+      "mcp__pyxll__pyxll_get_selection",
+      "mcp__pyxll__pyxll_read_range",
+      "mcp__pyxll__pyxll_write_range"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "pyxll"
+  ]
 }
 """
 

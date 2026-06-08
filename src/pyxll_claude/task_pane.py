@@ -20,8 +20,10 @@ Startup sequence:
 import base64
 import configparser
 import importlib
+import json
 import logging
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QUrl, Signal, Slot
@@ -34,7 +36,11 @@ from PySide6.QtWidgets import (
     QTextEdit, QVBoxLayout, QWidget,
 )
 
-from pyxll_claude.terminal import ClaudeProcess
+from pyxll import create_ctp, CTPDockPositionRight, get_config, rebind
+
+from .mcp_server import PyXLLMCPServer, find_free_port
+from .terminal import ClaudeProcess
+from .workspace import ensure_workspace_initialized
 
 _log = logging.getLogger(__name__)
 
@@ -46,7 +52,6 @@ _log = logging.getLogger(__name__)
 def _get_workspace() -> Path | None:
     """Return the workspace path from pyxll.cfg [CLAUDE] → workspace, or None."""
     try:
-        from pyxll import get_config
         value = get_config().get("CLAUDE", "workspace").strip()
         return Path(value) if value else None
     except (configparser.NoSectionError, configparser.NoOptionError):
@@ -54,6 +59,25 @@ def _get_workspace() -> Path | None:
     except Exception:
         _log.warning("Failed to read [CLAUDE] workspace from pyxll.cfg", exc_info=True)
         return None
+
+
+def _get_mcp_enabled() -> bool:
+    """Return False if [CLAUDE] mcp_enabled = false in pyxll.cfg, True otherwise."""
+    try:
+        value = get_config().get("CLAUDE", "mcp_enabled").strip().lower()
+        return value not in ("false", "0", "no", "off")
+    except Exception:
+        return True
+
+
+def _get_mcp_port_range() -> tuple[int, int]:
+    """Return (start, end) port range from pyxll.cfg [CLAUDE] → mcp_port_range."""
+    try:
+        value = get_config().get("CLAUDE", "mcp_port_range").strip()
+        start, _, end = value.partition("-")
+        return int(start.strip()), int(end.strip())
+    except Exception:
+        return 54717, 54816
 
 
 # ANSI helpers for terminal messages
@@ -88,13 +112,14 @@ class TerminalBridge(QObject):
     def __init__(self, process: ClaudeProcess, parent=None):
         super().__init__(parent)
         self._process = process
+        self._mcp_server = None
         process.data_received.connect(self._relay_output)
 
     @Slot(int, int)
     def startProcess(self, cols: int, rows: int):
-        """Validate the workspace, initialise it, then start claude."""
-        from pyxll_claude.workspace import ensure_workspace_initialized
-
+        """Validate the workspace and initialise it, then hand off to a background
+        thread for socket and process operations to avoid blocking Excel's main thread.
+        """
         workspace = _get_workspace()
 
         if workspace is None:
@@ -118,8 +143,47 @@ class TerminalBridge(QObject):
         for warning in warnings:
             self._write(f"\r\n{_Y}⚠  {warning}{_R}\r\n")
 
+        threading.Thread(
+            target=self._start_mcp_and_claude,
+            args=(workspace, cols, rows),
+            daemon=True,
+            name="pyxll-mcp-start",
+        ).start()
+
+    def _start_mcp_and_claude(self, workspace: Path, cols: int, rows: int) -> None:
+        """Background thread: find a free port, start the MCP server, then claude."""
+        if _get_mcp_enabled():
+            port_start, port_end = _get_mcp_port_range()
+            port = find_free_port(port_start, port_end)
+            if port is not None:
+                server = PyXLLMCPServer(workspace=workspace, port=port)
+                if server.start():
+                    self._mcp_server = server
+                    # Write .mcp.json to the workspace root — Claude Code reads this
+                    # file from the CWD at startup. Must be in the project root, not
+                    # .claude/; adding mcpServers to settings.json causes errors.
+                    mcp_json_path = workspace / ".mcp.json"
+                    mcp_json_path.write_text(
+                        json.dumps(
+                            {"mcpServers": {"pyxll": {"type": "sse", "url": f"http://localhost:{port}/sse"}}},
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                else:
+                    self._mcp_server = None
+                    _log.warning("MCP server failed to bind port %d", port)
+            else:
+                _log.warning("No free MCP port found in range %d-%d", port_start, port_end)
+
         self._process.start(cols=cols, rows=rows, workspace=workspace)
         self.workspaceReady.emit(str(workspace))
+
+    def stop_mcp_server(self) -> None:
+        """Stop the MCP server if running."""
+        if self._mcp_server is not None:
+            self._mcp_server.stop()
+            self._mcp_server = None
 
     @Slot(str)
     def receiveInput(self, text: str):
@@ -287,7 +351,6 @@ class ClaudeTerminalWidget(QWidget):
             else:
                 importlib.import_module("pyxll_claude_functions")
 
-            from pyxll import rebind
             rebind()
             self._set_status("Functions loaded successfully.", ok=True)
         except Exception as exc:
@@ -306,6 +369,7 @@ class ClaudeTerminalWidget(QWidget):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):
+        self._bridge.stop_mcp_server()
         self._process.terminate()
         super().closeEvent(event)
 
@@ -316,8 +380,6 @@ class ClaudeTerminalWidget(QWidget):
 
 def show_claude_pane():
     """Create and display the Claude AI custom task pane in Excel."""
-    from pyxll import create_ctp, CTPDockPositionRight
-
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
