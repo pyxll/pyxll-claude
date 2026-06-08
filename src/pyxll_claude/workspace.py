@@ -89,35 +89,33 @@ Fetch the PyXLL documentation and use it as context for the current task.
 
 ## Steps
 
-1. Fetch the documentation index:
-
-   ```
-   https://www.pyxll.com/llms.txt
-   ```
-
-   The index contains a navigation guide at the top explaining which sections to
-   read for common tasks, followed by links to individual `.md` pages grouped by
-   topic (User Guide, API Reference, Changelog, etc.).
-
-   Because this file may get summarized or truncated, use Bash with curl rather 
-   than the Fetch tool to avoid truncation:
+1. Fetch the documentation index to find relevant pages:
 
    ```bash
    curl -s https://www.pyxll.com/llms.txt
    ```
 
-2. Based on the current task, identify the relevant pages from the index and fetch
-   each one. Use the navigation guide at the top of the index to find the right
-   sections quickly. Fetch all pages relevant to the task — do not skip API
-   reference pages when writing code.
+   The index contains a navigation guide at the top mapping common tasks to
+   sections, followed by page titles, descriptions, and URLs grouped by topic.
 
-3. If the information needed was not found in the pages fetched from the index,
-   fall back to the full concatenated docs for a deeper search. Because this file
-   is ~500 KB, use Bash with curl rather than the Fetch tool to avoid truncation:
+2. Fetch the individual pages relevant to the task directly by their URL:
 
    ```bash
-   curl -s https://www.pyxll.com/llms-full.txt
+   curl -s <page-url>
    ```
+
+3. If the index does not surface what you need, use the search script to find
+   pages by keyword. The script caches the full docs locally (refreshed every
+   24 h) and returns only matching page URLs — avoiding loading 500 KB into context.
+
+   The script is in the `scripts/` folder next to this file. Find this file's
+   location and run:
+
+   ```bash
+   /path/to/this/skills/fetch-pyxll-docs/scripts/search-pyxll-docs.sh <keyword> [keyword2 ...]
+   ```
+
+   Then fetch the returned page URLs individually using curl.
 
 4. Use the documentation to inform your answer, code, or review.
 
@@ -126,16 +124,100 @@ Fetch the PyXLL documentation and use it as context for the current task.
 - ALWAYS fetch these docs before writing any PyXLL-specific code.
 - Do NOT rely on training-data knowledge alone for PyXLL APIs — the docs are authoritative.
 - When writing `@xl_func` functions, check the type signature and argument type syntax from the docs.
-- When subclassing a PyXLL class (e.g. Formatter, ConditionalFormatterBase), fetch the API reference for that
-  class to get exact method signatures before looking at examples.
+- Before using any PyXLL class, function, or decorator, fetch its API reference and use
+  only what is explicitly documented. Never infer behaviour from conventions or assumptions —
+  if it is not in the docs, do not use it.
+"""
+
+_SEARCH_SCRIPT_SH = """\
+#!/usr/bin/env bash
+# search-pyxll-docs.sh -- Search PyXLL full docs, return matching page URLs.
+#
+# Downloads and caches the full docs locally (refreshed every 24 h) so only
+# the relevant pages need to be loaded into the AI context.
+#
+# Usage: ./search-pyxll-docs.sh <keyword> [keyword2 ...] [-f|--fresh]
+
+set -euo pipefail
+
+FULL_URL="https://www.pyxll.com/llms-full.txt"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/pyxll-docs"
+CACHE_FILE="$CACHE_DIR/llms-full.txt"
+CACHE_MAX_AGE=86400
+
+usage() { echo "Usage: $0 [-f|--fresh] <keyword> [keyword2 ...]"; exit 1; }
+
+FRESH=false
+KEYWORDS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -f|--fresh) FRESH=true; shift ;;
+        -h|--help)  usage ;;
+        -*)         echo "Unknown option: $1"; usage ;;
+        *)          KEYWORDS+=("$1"); shift ;;
+    esac
+done
+[[ ${#KEYWORDS[@]} -eq 0 ]] && { echo "Error: at least one keyword required"; usage; }
+
+mkdir -p "$CACHE_DIR"
+
+need_download() {
+    [[ "$FRESH" == "true" ]] && return 0
+    [[ ! -f "$CACHE_FILE" ]] && return 0
+    local age
+    if [[ "$(uname)" == "Darwin" ]]; then
+        age=$(( $(date +%s) - $(stat -f %m "$CACHE_FILE") ))
+    else
+        age=$(( $(date +%s) - $(stat -c %Y "$CACHE_FILE") ))
+    fi
+    [[ $age -gt $CACHE_MAX_AGE ]]
+}
+
+if need_download; then
+    echo "Downloading PyXLL docs (cached for 24 h)..." >&2
+    curl -sL "$FULL_URL" -o "$CACHE_FILE"
+fi
+
+kw_pattern=""
+for kw in "${KEYWORDS[@]}"; do
+    kw_pattern="${kw_pattern}|$(printf '%s' "$kw" | tr '[:upper:]' '[:lower:]')"
+done
+kw_pattern="${kw_pattern:1}"
+
+echo "Searching for: ${KEYWORDS[*]}" >&2
+
+# PyXLL llms-full.txt page format:
+#   ---                                    <- page boundary
+#   ## Title                               <- page header (## not ###)
+#   [path.md](https://www.pyxll.com/...)  <- URL line immediately after title
+awk -v kw="$kw_pattern" '
+BEGIN { url=""; n=split(kw, K, "|"); state=0 }
+/^---$/                                { state=1; next }
+state==1 && /^## /                     { state=2; next }
+state==2 && index($0, "www.pyxll.com") {
+    if (split($0, a, "(") >= 2) {
+        cp = index(a[2], ")")
+        if (cp > 0) url = substr(a[2], 1, cp-1)
+    }
+    state=0; next
+}
+url != "" {
+    line = tolower($0)
+    for (i=1; i<=n; i++) {
+        if (index(line, K[i]) > 0 && !seen[url]) {
+            seen[url]=1; print url; break
+        }
+    }
+}
+' "$CACHE_FILE"
 """
 
 _SETTINGS_LOCAL_JSON = """\
 {
   "permissions": {
     "allow": [
+      "Bash(*/search-pyxll-docs.sh*)",
       "Bash(curl -s https://www.pyxll.com/*)",
-      "WebFetch(domain:www.pyxll.com)",
       "Read(pyxll_claude_functions.py)",
       "Write(pyxll_claude_functions.py)"
     ]
@@ -178,14 +260,27 @@ def ensure_workspace_initialized(workspace: Path) -> list[str]:
 
     _ensure_file(workspace / "CLAUDE.md", _CLAUDE_MD)
     _ensure_file(workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "SKILL.md", _FETCH_SKILL_MD)
+    _ensure_file(workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "scripts" / "search-pyxll-docs.sh", _SEARCH_SCRIPT_SH)
     _ensure_file(workspace / ".claude" / "settings.local.json", _SETTINGS_LOCAL_JSON)
     _ensure_file(workspace / "pyxll_claude_functions.py", _XL_FUNCTIONS_PY)
+
+    # Ensure the search script is executable.
+    script_path = workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "scripts" / "search-pyxll-docs.sh"
+    if script_path.exists():
+        script_path.chmod(script_path.stat().st_mode | 0o111)
 
     # Warn if SKILL.md differs from the current template.
     skill_path = workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "SKILL.md"
     if skill_path.exists() and skill_path.read_text(encoding="utf-8") != _FETCH_SKILL_MD:
         warnings.append(
             ".claude/skills/fetch-pyxll-docs/SKILL.md is out of date.\n"
+            "Delete it and reload PyXLL to regenerate it."
+        )
+
+    # Warn if the search script differs from the current template.
+    if script_path.exists() and script_path.read_text(encoding="utf-8") != _SEARCH_SCRIPT_SH:
+        warnings.append(
+            ".claude/skills/fetch-pyxll-docs/scripts/search-pyxll-docs.sh is out of date.\n"
             "Delete it and reload PyXLL to regenerate it."
         )
 
