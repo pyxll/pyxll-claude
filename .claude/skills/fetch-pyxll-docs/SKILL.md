@@ -44,9 +44,13 @@ Fetch the PyXLL documentation and use it as context for the current task.
 
 ## Rules
 
-- ALWAYS fetch these docs before writing any PyXLL-specific code.
+- ALWAYS fetch these docs before writing, modifying, or troubleshooting any
+  PyXLL-specific code or behaviour. Before suggesting a manual workaround for a
+  PyXLL problem, check whether PyXLL already has a built-in solution (decorator
+  parameter, config key, or feature).
 - Do NOT rely on training-data knowledge alone for PyXLL APIs — the docs are authoritative.
-- When writing `@xl_func` functions, check the type signature and argument type syntax from the docs.
+- When writing `@xl_func` functions, check the type signature and argument type
+  syntax from the docs.
 - Before writing any code that calls the Excel COM API (Range, Worksheet, Workbook, etc.),
   fetch https://www.pyxll.com/docs/userguide/vba.md and read it in full. It documents
   critical differences between VBA and Python — including how COM properties that take

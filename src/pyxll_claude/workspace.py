@@ -22,10 +22,10 @@ _log = logging.getLogger(__name__)
 _CLAUDE_MD = """\
 # PyXLL Excel Functions Workspace
 
-## Fetch PyXLL docs before writing any Python code
+## Fetch PyXLL docs before writing or diagnosing any PyXLL code
 
-Before writing, editing, or reviewing any Python code in this workspace,
-fetch the authoritative PyXLL documentation:
+Before writing, editing, reviewing, or diagnosing any issue with PyXLL code
+in this workspace, fetch the authoritative PyXLL documentation:
 
 ```
 /fetch-pyxll-docs
@@ -34,6 +34,9 @@ fetch the authoritative PyXLL documentation:
 Your training-data knowledge of PyXLL is incomplete and may be wrong.
 The live documentation is the only authoritative source for decorator
 signatures, type annotations, and all other PyXLL-specific behaviour.
+In particular, before suggesting a workaround for unexpected PyXLL behaviour,
+check the docs first — PyXLL often has a built-in decorator parameter or
+config setting that solves the problem directly.
 
 ## PyXLL MCP Tools
 
@@ -152,9 +155,13 @@ Fetch the PyXLL documentation and use it as context for the current task.
 
 ## Rules
 
-- ALWAYS fetch these docs before writing any PyXLL-specific code.
+- ALWAYS fetch these docs before writing, modifying, or troubleshooting any
+  PyXLL-specific code or behaviour. Before suggesting a manual workaround for a
+  PyXLL problem, check whether PyXLL already has a built-in solution (decorator
+  parameter, config key, or feature).
 - Do NOT rely on training-data knowledge alone for PyXLL APIs — the docs are authoritative.
-- When writing `@xl_func` functions, check the type signature and argument type syntax from the docs.
+- When writing `@xl_func` functions, check the type signature and argument type
+  syntax from the docs.
 - Before writing any code that calls the Excel COM API (Range, Worksheet, Workbook, etc.),
   fetch https://www.pyxll.com/docs/userguide/vba.md and read it in full. It documents
   critical differences between VBA and Python — including how COM properties that take
@@ -309,52 +316,53 @@ def ensure_workspace_initialized(workspace: Path) -> list[str]:
     """
     warnings: list[str] = []
 
+    skill_dir = workspace / ".claude" / "skills" / "fetch-pyxll-docs"
+    skill_path = skill_dir / "SKILL.md"
+    script_path = skill_dir / "scripts" / "search-pyxll-docs.sh"
+    settings_path = workspace / ".claude" / "settings.local.json"
+
     _ensure_file(workspace / "CLAUDE.md", _CLAUDE_MD)
-    _ensure_file(workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "SKILL.md", _FETCH_SKILL_MD)
-    _ensure_file(workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "scripts" / "search-pyxll-docs.sh", _SEARCH_SCRIPT_SH)
-    _ensure_file(workspace / ".claude" / "settings.local.json", _SETTINGS_LOCAL_JSON)
+    _ensure_file(skill_path, _FETCH_SKILL_MD)
+    _ensure_file(script_path, _SEARCH_SCRIPT_SH)
+    _ensure_file(settings_path, _SETTINGS_LOCAL_JSON)
     _ensure_file(workspace / "pyxll_claude_functions.py", _XL_FUNCTIONS_PY)
 
     # Ensure the search script is executable.
-    script_path = workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "scripts" / "search-pyxll-docs.sh"
     if script_path.exists():
         script_path.chmod(script_path.stat().st_mode | 0o111)
 
-    # Warn if SKILL.md differs from the current template.
-    skill_path = workspace / ".claude" / "skills" / "fetch-pyxll-docs" / "SKILL.md"
-    if skill_path.exists() and skill_path.read_text(encoding="utf-8") != _FETCH_SKILL_MD:
+    # Warn if any generated file differs from the current template.
+    if _file_differs(skill_path, _FETCH_SKILL_MD):
         warnings.append(
             ".claude/skills/fetch-pyxll-docs/SKILL.md is out of date.\n"
-            "Delete it and reload PyXLL to regenerate it."
+            "Delete it and restart Claude to regenerate it."
         )
 
-    # Warn if the search script differs from the current template.
-    if script_path.exists() and script_path.read_text(encoding="utf-8") != _SEARCH_SCRIPT_SH:
+    if _file_differs(script_path, _SEARCH_SCRIPT_SH):
         warnings.append(
-            ".claude/skills/fetch-pyxll-docs/scripts/search-pyxll-docs.sh is out of date.\n"
-            "Delete it and reload PyXLL to regenerate it."
+            ".claude/skills/fetch-pyxll-docs/scripts/search-pyxll-docs.sh"
+            " is out of date.\n"
+            "Delete it and restart Claude to regenerate it."
         )
 
-    # Warn if CLAUDE.md still uses the old inline curl approach instead of the skill.
-    claude_md = workspace / "CLAUDE.md"
-    if claude_md.exists():
-        content = claude_md.read_text(encoding="utf-8")
-        if "curl -s https://www.pyxll.com/llms-full.txt" in content:
-            warnings.append(
-                "CLAUDE.md is out of date — it uses an inline curl command instead of\n"
-                "the /fetch-pyxll-docs skill.\n"
-                "Delete CLAUDE.md and reload PyXLL to regenerate it."
-            )
+    if _file_differs(workspace / "CLAUDE.md", _CLAUDE_MD):
+        warnings.append(
+            "CLAUDE.md is out of date.\n"
+            "Delete it and restart Claude to regenerate it."
+        )
 
-    # Warn if settings.local.json differs from the current template.
-    settings_path = workspace / ".claude" / "settings.local.json"
-    if settings_path.exists() and settings_path.read_text(encoding="utf-8") != _SETTINGS_LOCAL_JSON:
+    if _file_differs(settings_path, _SETTINGS_LOCAL_JSON):
         warnings.append(
             ".claude/settings.local.json is out of date.\n"
-            "Delete it and reload PyXLL to regenerate it."
+            "Delete it and restart Claude to regenerate it."
         )
 
     return warnings
+
+
+def _file_differs(path: Path, content: str) -> bool:
+    """Return True if path exists but its content differs from content."""
+    return path.exists() and path.read_text(encoding="utf-8") != content
 
 
 def _ensure_file(path: Path, content: str) -> None:
