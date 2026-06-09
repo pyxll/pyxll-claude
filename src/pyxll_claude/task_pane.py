@@ -23,9 +23,22 @@ import configparser
 import importlib
 import json
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
+
+# Chromium subprocesses (GPU renderer, sandbox helper) can fail to launch from
+# within Excel's process due to job-object and integrity-level restrictions,
+# causing a STATUS_BREAKPOINT (0x80000003) CHECK() failure — especially during
+# recalculation when COM message pumping re-enters the Qt event loop.
+# --disable-gpu runs GPU work in-process; --no-sandbox skips the low-integrity
+# sandbox helper process.  Both must be set before the first QWebEngineView is
+# created; using setdefault lets the user override via the environment.
+os.environ.setdefault(
+    "QTWEBENGINE_CHROMIUM_FLAGS",
+    "--disable-gpu --no-sandbox",
+)
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
