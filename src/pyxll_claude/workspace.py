@@ -39,9 +39,19 @@ signatures, type annotations, and all other PyXLL-specific behaviour.
 
 Use these tools proactively — do not ask the user to perform these actions manually:
 
-- `pyxll_reload` — after every edit to `pyxll_claude_functions.py`, reload and rebind.
+- `pyxll_reload_module(module?)` — reload a single Python module (not the full add-in)
+  and rebind @xl_func functions. Defaults to `pyxll_claude_functions` when omitted.
+  Call this after every edit to `pyxll_claude_functions.py`.
 - `pyxll_get_log` — whenever the user mentions the PyXLL log, asks about errors or
   warnings, or wants to see recent PyXLL activity.
+- `pyxll_get_version` — before using any PyXLL feature that specifies a minimum version
+  in the documentation, call this to confirm the feature is available.
+- `pyxll_get_python_version` — when you need to confirm Python version compatibility
+  before using language features or library APIs that require a specific version.
+- `pyxll_get_config_path` — when you need to read or edit pyxll.cfg; call this first
+  to find the file rather than guessing its location.
+- `pyxll_get_config` — to inspect the parsed pyxll.cfg contents (includes variable
+  substitutions and merged external configs); prefer this over reading the raw file.
 - `pyxll_read_range(ref, sheet?)` — when the user asks to read or inspect cell values.
 - `pyxll_read_formulas(ref, sheet?)` — when the user asks to see formulas in cells.
 - `pyxll_write_range(ref, values, sheet?)` — when the user asks to write data or
@@ -61,15 +71,15 @@ def add_numbers(x: float, y: float) -> float:
     return x + y
 ```
 
-After writing or editing functions, call the `pyxll_reload` MCP tool to
+After writing or editing functions, call the `pyxll_reload_module` MCP tool to
 register them with Excel immediately.  If it returns an error, fix the
-error in `pyxll_claude_functions.py` and call `pyxll_reload` again.
+error in `pyxll_claude_functions.py` and call `pyxll_reload_module` again.
 Repeat until it returns `OK`.  Do not ask the user to click **Load Functions**.
 
 ## Workspace context
 
 - User Excel functions: `pyxll_claude_functions.py` (in this workspace root)
-- Use the `pyxll_reload` MCP tool to reload after edits.
+- Use the `pyxll_reload_module` MCP tool to reload after edits.
 - The **Load Functions** button in the task pane is a manual fallback only.
 
 ## Workspace layout
@@ -86,8 +96,13 @@ CLAUDE.md                  ← this file
 ## Rules
 
 - After writing or editing functions in `pyxll_claude_functions.py`, call the
-  `pyxll_reload` MCP tool. If it returns an error, fix it and call `pyxll_reload`
+  `pyxll_reload_module` MCP tool. If it returns an error, fix it and call `pyxll_reload_module`
   again. Repeat until it returns `OK`. Do not ask the user to click **Load Functions**.
+- Before using any PyXLL feature that the documentation marks with a minimum version
+  requirement, call `pyxll_get_version` and confirm the installed version satisfies
+  that requirement.  If it does not, use an alternative approach that works with the
+  installed version, and tell the user what version would be needed for the preferred
+  approach.
 """
 
 _FETCH_SKILL_MD = """\
@@ -243,8 +258,12 @@ _SETTINGS_LOCAL_JSON = """\
       "Bash(curl -s https://www.pyxll.com/*)",
       "Read(pyxll_claude_functions.py)",
       "Write(pyxll_claude_functions.py)",
-      "mcp__pyxll__pyxll_reload",
+      "mcp__pyxll__pyxll_reload_module",
       "mcp__pyxll__pyxll_get_log",
+      "mcp__pyxll__pyxll_get_version",
+      "mcp__pyxll__pyxll_get_python_version",
+      "mcp__pyxll__pyxll_get_config_path",
+      "mcp__pyxll__pyxll_get_config",
       "mcp__pyxll__pyxll_get_selection",
       "mcp__pyxll__pyxll_read_range",
       "mcp__pyxll__pyxll_read_formulas",

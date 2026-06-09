@@ -4,12 +4,16 @@ Minimal MCP (Model Context Protocol) server over HTTP/SSE.
 Runs in a background daemon thread inside Excel's Python process and exposes
 four tools to the claude agent:
 
-  pyxll_reload        — reload pyxll_claude_functions.py and call pyxll.rebind()
-  pyxll_get_log       — tail the PyXLL log file
-  pyxll_get_selection — return the current selection address and sheet name
-  pyxll_read_range    — read cell values via the Excel COM API
-  pyxll_read_formulas — read cell formulas (Formula2) via the Excel COM API
-  pyxll_write_range   — write values to an Excel range via the COM API
+  pyxll_reload_module   — reload a Python module in the workspace and call pyxll.rebind()
+  pyxll_get_log         — tail the PyXLL log file
+  pyxll_get_version     — return the installed PyXLL version string
+  pyxll_get_python_version — return the Python version string
+  pyxll_get_config_path — return the full path of the pyxll.cfg file
+  pyxll_get_config      — return the parsed contents of pyxll.cfg via pyxll.get_config()
+  pyxll_get_selection   — return the current selection address and sheet name
+  pyxll_read_range      — read cell values via the Excel COM API
+  pyxll_read_formulas   — read cell formulas (Formula2) via the Excel COM API
+  pyxll_write_range     — write values to an Excel range via the COM API
 
 Transport: MCP protocol 2024-11-05 over SSE (GET /sse + POST /message).
 Each SSE connection gets a session ID; POST /message?sessionId=X routes
@@ -17,6 +21,7 @@ responses back to that session's event stream.
 """
 import http.server
 import importlib
+import io
 import json
 import logging
 import os
@@ -243,9 +248,21 @@ class PyXLLMCPServer:
         args = params.get("arguments", {})
 
         try:
-            if tool_name == "pyxll_reload":
-                text = self._tool_reload()
+            if tool_name == "pyxll_reload_module":
+                text = self._tool_reload_module(args.get("module"))
                 is_error = text != "OK"
+            elif tool_name == "pyxll_get_version":
+                text = self._tool_get_version()
+                is_error = text.startswith("ERROR:")
+            elif tool_name == "pyxll_get_python_version":
+                text = self._tool_get_python_version()
+                is_error = text.startswith("ERROR:")
+            elif tool_name == "pyxll_get_config_path":
+                text = self._tool_get_config_path()
+                is_error = text.startswith("ERROR:")
+            elif tool_name == "pyxll_get_config":
+                text = self._tool_get_config()
+                is_error = text.startswith("ERROR:")
             elif tool_name == "pyxll_get_log":
                 text = self._tool_get_log(int(args.get("lines", 50)))
                 is_error = False
@@ -283,8 +300,9 @@ class PyXLLMCPServer:
     # Tool implementations
     # ------------------------------------------------------------------
 
-    def _tool_reload(self) -> str:
-        """Reload pyxll_claude_functions and rebind with Excel."""
+    def _tool_reload_module(self, module: str | None) -> str:
+        """Reload a workspace module and rebind @xl_func functions with Excel."""
+        module_name = module or "pyxll_claude_functions"
         result: list[str | None] = [None]
         done = threading.Event()
         ws_str = str(self._workspace)
@@ -293,10 +311,10 @@ class PyXLLMCPServer:
             try:
                 if ws_str not in sys.path:
                     sys.path.insert(0, ws_str)
-                if "pyxll_claude_functions" in sys.modules:
-                    importlib.reload(sys.modules["pyxll_claude_functions"])
+                if module_name in sys.modules:
+                    importlib.reload(sys.modules[module_name])
                 else:
-                    importlib.import_module("pyxll_claude_functions")
+                    importlib.import_module(module_name)
                 rebind()
                 result[0] = "OK"
             except Exception:
@@ -307,9 +325,43 @@ class PyXLLMCPServer:
         pyxll.schedule_call(_do_reload)
         timed_out = not done.wait(timeout=30)
         if timed_out:
-            _log.warning("pyxll_reload: timed out waiting for main-thread callback")
+            _log.warning("pyxll_reload_module(%s): timed out waiting for main-thread callback", module_name)
             return "ERROR: reload timed out (Excel may be busy)"
         return result[0]
+
+    def _tool_get_version(self) -> str:
+        """Return the installed PyXLL version string."""
+        try:
+            return pyxll.__version__
+        except Exception:
+            return "ERROR: " + traceback.format_exc()
+
+    def _tool_get_python_version(self) -> str:
+        """Return the Python version string."""
+        try:
+            return sys.version
+        except Exception:
+            return "ERROR: " + traceback.format_exc()
+
+    def _tool_get_config_path(self) -> str:
+        """Return the full path of the pyxll.cfg file."""
+        try:
+            env = os.environ.get("PYXLL_CONFIG_FILE", "").strip()
+            if env:
+                return env
+            xll = Path(pyxll.__file__)
+            return str(xll.with_suffix(".cfg"))
+        except Exception:
+            return "ERROR: " + traceback.format_exc()
+
+    def _tool_get_config(self) -> str:
+        """Return the parsed pyxll config as an INI-formatted string."""
+        try:
+            buf = io.StringIO()
+            get_config().write(buf)
+            return buf.getvalue()
+        except Exception:
+            return "ERROR: " + traceback.format_exc()
 
     def _tool_get_log(self, lines: int = 50) -> str:
         """Return the last N lines of the PyXLL log file."""
@@ -488,13 +540,27 @@ def _get_log_path() -> Path:
 
 _TOOLS = [
     {
-        "name": "pyxll_reload",
+        "name": "pyxll_reload_module",
         "description": (
-            "Reload pyxll_claude_functions.py and rebind all @xl_func functions with "
-            "Excel. Call this after every edit to pyxll_claude_functions.py. "
+            "Reload a single Python module from the workspace and rebind all @xl_func "
+            "functions with Excel. This reloads only the specified module — it does NOT "
+            "perform a full PyXLL add-in reload (which would close the task pane). "
+            "Call this after every edit to pyxll_claude_functions.py. "
             "Returns 'OK' on success or a Python traceback on error."
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "module": {
+                    "type": "string",
+                    "description": (
+                        "Name of the module to reload. "
+                        "Defaults to 'pyxll_claude_functions' if omitted."
+                    ),
+                },
+            },
+            "required": [],
+        },
     },
     {
         "name": "pyxll_get_log",
@@ -514,6 +580,44 @@ _TOOLS = [
             },
             "required": [],
         },
+    },
+    {
+        "name": "pyxll_get_config_path",
+        "description": (
+            "Return the full path (including filename) of the pyxll.cfg configuration file. "
+            "Checks the PYXLL_CONFIG_FILE environment variable first; if unset, derives the "
+            "path from pyxll.__file__ by replacing its extension with .cfg (e.g. pyxll.xll "
+            "→ pyxll.cfg). Use this before reading or editing pyxll.cfg."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "pyxll_get_version",
+        "description": (
+            "Return the installed PyXLL version string (e.g. '5.4.1'). "
+            "Call this before using any PyXLL feature that specifies a minimum version "
+            "in the documentation, to confirm the feature is available."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "pyxll_get_python_version",
+        "description": (
+            "Return the Python version string (e.g. '3.11.4 (main, ...')). "
+            "Call this when you need to confirm Python version compatibility "
+            "before using language features or library APIs that require a specific version."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "pyxll_get_config",
+        "description": (
+            "Return the complete, parsed contents of pyxll.cfg as an INI-formatted string. "
+            "Uses pyxll.get_config() so variable substitutions and any externally merged "
+            "config files are already applied. Prefer this over reading the raw file when "
+            "you need to inspect or reason about PyXLL configuration values."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "pyxll_get_selection",
