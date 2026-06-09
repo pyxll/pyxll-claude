@@ -65,6 +65,18 @@ def find_free_port(start: int = 54717, end: int = 54816) -> int | None:
 # MCP server
 # ---------------------------------------------------------------------------
 
+class _ThreadingHTTPServer(http.server.ThreadingHTTPServer):
+    """Threading HTTPServer that suppresses common connection errors during shutdown."""
+
+    def handle_error(self, request, client_address):
+        # Suppress ConnectionResetError and BrokenPipeError as they are expected
+        # when the client process (Claude CLI) is terminated during task pane closure.
+        exc_type, _, _ = sys.exc_info()
+        if exc_type is not None and issubclass(exc_type, (ConnectionResetError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class PyXLLMCPServer:
     """MCP server running on localhost in a background daemon thread."""
 
@@ -83,7 +95,7 @@ class PyXLLMCPServer:
         """
         try:
             handler = self._make_handler()
-            self._server = http.server.ThreadingHTTPServer(
+            self._server = _ThreadingHTTPServer(
                 ("127.0.0.1", self._port), handler
             )
             self._thread = threading.Thread(
@@ -92,7 +104,7 @@ class PyXLLMCPServer:
                 daemon=True,
             )
             self._thread.start()
-            _log.info("PyXLL MCP server started on port %d", self._port)
+            _log.debug("PyXLL MCP server started on port %d", self._port)
             return True
         except OSError as exc:
             _log.warning(
@@ -102,9 +114,12 @@ class PyXLLMCPServer:
 
     def stop(self) -> None:
         if self._server:
+            with self._sessions_lock:
+                for q in self._sessions.values():
+                    q.put(None)
             self._server.shutdown()
             self._server = None
-            _log.info("PyXLL MCP server stopped")
+            _log.debug("PyXLL MCP server stopped")
 
     # ------------------------------------------------------------------
     # Request handler factory

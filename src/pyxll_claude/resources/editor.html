@@ -26,7 +26,7 @@
 
     function checkDirty() {
       if (bridge && editor) {
-        bridge.setDirty(editor.getValue() !== savedContent);
+        bridge.postMessage(JSON.stringify({type: 'editor_dirty', dirty: editor.getValue() !== savedContent}));
       }
     }
 
@@ -60,39 +60,67 @@
         // Ctrl+S / Cmd+S → save
         editor.addCommand(
           monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-          function () { bridge.saveContent(editor.getValue()); }
+          function () { bridge.postMessage(JSON.stringify({type: 'editor_save', text: editor.getValue()})); }
+        );
+
+        // Ctrl+C → Copy (explicitly via bridge if native is blocked)
+        editor.addCommand(
+          monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC,
+          function () {
+            const selection = editor.getSelection();
+            const text = editor.getModel().getValueInRange(selection);
+            if (text) {
+              bridge.copyToClipboard(text);
+            }
+          }
+        );
+
+        // Ctrl+V → Paste (explicitly via bridge if native is blocked)
+        editor.addCommand(
+          monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV,
+          function () {
+            bridge.pasteFromClipboard(function(text) {
+              if (text) {
+                const selection = editor.getSelection();
+                const range = new monaco.Range(
+                  selection.startLineNumber, selection.startColumn,
+                  selection.endLineNumber, selection.endColumn
+                );
+                editor.executeEdits('paste', [
+                  { range: range, text: text, forceMoveMarkers: true }
+                ]);
+              }
+            });
+          }
         );
 
         editor.onDidChangeModelContent(checkDirty);
 
         // Signal Python that the editor is ready to receive content
-        bridge.editorReady();
+        bridge.postMessage(JSON.stringify({type: 'editor_ready'}));
       });
     }
 
     new QWebChannel(qt.webChannelTransport, function (channel) {
-      bridge = channel.objects.editorBridge;
+      bridge = channel.objects.bridge;
 
-      // Python → JS: load (or reload) file content
-      bridge.loadContent.connect(function (text) {
-        savedContent = text;
-        if (editor) {
-          var pos = editor.getPosition();
-          editor.setValue(text);
-          if (pos) editor.setPosition(pos);
+      // Python → JS messages
+      bridge.messageReceived.connect(function (data) {
+        var msg = JSON.parse(data);
+        if (msg.type === 'editor_load') {
+          savedContent = msg.text;
+          if (editor) {
+            var pos = editor.getPosition();
+            editor.setValue(msg.text);
+            if (pos) editor.setPosition(pos);
+            checkDirty();
+          }
+        } else if (msg.type === 'editor_mark_saved') {
+          savedContent = editor ? editor.getValue() : savedContent;
           checkDirty();
+        } else if (msg.type === 'editor_request_save') {
+          if (editor) bridge.postMessage(JSON.stringify({type: 'editor_save', text: editor.getValue()}));
         }
-      });
-
-      // Python → JS: file was just saved successfully — update savedContent
-      bridge.markSaved.connect(function () {
-        savedContent = editor ? editor.getValue() : savedContent;
-        checkDirty();
-      });
-
-      // Python → JS: Load Functions button was clicked while editor was dirty
-      bridge.requestSave.connect(function () {
-        if (editor) bridge.saveContent(editor.getValue());
       });
 
       // Dynamically inject the Monaco loader so QWebChannel is ready first

@@ -96,6 +96,7 @@ class ClaudeProcess(QObject):
         self._cmd_queue: queue.Queue = queue.Queue()
         self._pty_thread: threading.Thread | None = None
         self._running = False
+        self._pty: object = None
 
     # ------------------------------------------------------------------
     # Public API — called from the Qt main thread
@@ -128,6 +129,18 @@ class ClaudeProcess(QObject):
         """Ask the PTY thread to stop."""
         self._running = False
         self._cmd_queue.put(_STOP)
+        if hasattr(self, "_pty") and self._pty:
+            try:
+                self._pty.cancel_io()
+            except Exception:
+                pass
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for the PTY thread to finish.  Returns True if it finished."""
+        if self._pty_thread and self._pty_thread.is_alive():
+            self._pty_thread.join(timeout=timeout)
+            return not self._pty_thread.is_alive()
+        return True
 
     # ------------------------------------------------------------------
     # Qt event handler — receives events posted by the PTY thread
@@ -181,8 +194,9 @@ class ClaudeProcess(QObject):
         is_script = Path(claude).suffix.lower() in (".cmd", ".bat")
         exe = f'cmd.exe /d /c "{claude}"' if is_script else claude
 
-        pty = PTY(cols, rows)
+        pty = None
         try:
+            self._pty = pty = PTY(cols, rows)
             pty.spawn(exe, cwd=str(workspace))
 
             stop = False
@@ -223,10 +237,16 @@ class ClaudeProcess(QObject):
                     stop = self._handle_cmd(cmd, pty)
 
         finally:
-            try:
-                del pty
-            except Exception as exc:
-                _log.warning("Error closing PTY: %s", exc)
+            if pty:
+                try:
+                    pty.cancel_io()
+                except Exception:
+                    pass
+            # Drop references to the PTY object so it can be destroyed,
+            # which terminates the child process.
+            self._pty = None
+            pty = None
 
         self._running = False
         QCoreApplication.postEvent(self, _FinishedEvent())
+        _log.debug("PTY thread finished")

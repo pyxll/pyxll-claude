@@ -62,7 +62,7 @@
         // into an xterm.js viewport that is already at the correct col count.
         function resize() {
             fitAddon.fit();
-            if (bridge) bridge.resizeTerminal(term.cols, term.rows);
+            if (bridge) bridge.postMessage(JSON.stringify({type: 'terminal_resize', cols: term.cols, rows: term.rows}));
         }
 
         // 150 ms debounce — fire once after the user stops dragging.
@@ -73,18 +73,21 @@
         });
         resizeObserver.observe(document.getElementById('terminal'));
 
-        // Connect to the Python TerminalBridge via Qt WebChannel
+        // Connect to the Python bridge via Qt WebChannel
         new QWebChannel(qt.webChannelTransport, function(channel) {
             bridge = channel.objects.bridge;
 
-            // PTY output (base64) → xterm.js
-            bridge.outputReady.connect(function(b64) {
-                const bin = atob(b64);
-                const buf = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) {
-                    buf[i] = bin.charCodeAt(i);
+            // PTY output (base64-encoded bytes) → xterm.js
+            bridge.messageReceived.connect(function(data) {
+                var msg = JSON.parse(data);
+                if (msg.type === 'terminal_output') {
+                    var bin = atob(msg.data);
+                    var buf = new Uint8Array(bin.length);
+                    for (var i = 0; i < bin.length; i++) {
+                        buf[i] = bin.charCodeAt(i);
+                    }
+                    term.write(buf);
                 }
-                term.write(buf);
             });
 
             // Intercept Ctrl+C / Ctrl+V for clipboard and Shift+Enter for newline.
@@ -98,28 +101,35 @@
 
             term.attachCustomKeyEventHandler(function(event) {
                 if (event.type !== 'keydown') return true;
+                const key = event.key.toLowerCase();
                 if (event.shiftKey && event.key === 'Enter') {
                     shiftEnterSent = true;
-                    bridge.receiveInput('\x1b[13;2u');
+                    bridge.postMessage(JSON.stringify({type: 'terminal_input', text: '\x1b[13;2u'}));
                     return false;
                 }
                 shiftEnterSent = false;
                 if (!event.ctrlKey) return true;
-                if (event.key === 'c') {
+                if (key === 'c') {
                     const sel = term.getSelection();
                     if (sel) {
                         bridge.copyToClipboard(sel);
                         return false;
                     }
                 }
-                if (event.key === 'v') {
+                if (key === 'v') {
                     bridge.pasteFromClipboard(function(text) {
-                        if (text) bridge.receiveInput(text);
+                        if (text) bridge.postMessage(JSON.stringify({type: 'terminal_input', text: text}));
                     });
                     return false;
                 }
                 return true;
             });
+
+            // Intercept native paste events to prevent double-pasting.
+            window.addEventListener('paste', function(event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }, true);
 
             // Keyboard input → Python → PTY stdin.
             // Drop \r when it follows a Shift+Enter we already handled — xterm.js
@@ -130,12 +140,12 @@
                     return;
                 }
                 shiftEnterSent = false;
-                bridge.receiveInput(data);
+                bridge.postMessage(JSON.stringify({type: 'terminal_input', text: data}));
             });
 
             // Size the terminal to the pane and start the process.
             fitAddon.fit();
-            bridge.startProcess(term.cols, term.rows);
+            bridge.postMessage(JSON.stringify({type: 'start_process', cols: term.cols, rows: term.rows}));
 
             term.focus();
         });
