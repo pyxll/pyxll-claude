@@ -43,6 +43,7 @@ Use these tools proactively — do not ask the user to perform these actions man
 - `pyxll_get_log` — whenever the user mentions the PyXLL log, asks about errors or
   warnings, or wants to see recent PyXLL activity.
 - `pyxll_read_range(ref, sheet?)` — when the user asks to read or inspect cell values.
+- `pyxll_read_formulas(ref, sheet?)` — when the user asks to see formulas in cells.
 - `pyxll_write_range(ref, values, sheet?)` — when the user asks to write data or
   formulas into Excel cells.
 
@@ -246,6 +247,7 @@ _SETTINGS_LOCAL_JSON = """\
       "mcp__pyxll__pyxll_get_log",
       "mcp__pyxll__pyxll_get_selection",
       "mcp__pyxll__pyxll_read_range",
+      "mcp__pyxll__pyxll_read_formulas",
       "mcp__pyxll__pyxll_write_range"
     ]
   },

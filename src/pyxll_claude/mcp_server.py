@@ -8,6 +8,7 @@ four tools to the claude agent:
   pyxll_get_log       — tail the PyXLL log file
   pyxll_get_selection — return the current selection address and sheet name
   pyxll_read_range    — read cell values via the Excel COM API
+  pyxll_read_formulas — read cell formulas (Formula2) via the Excel COM API
   pyxll_write_range   — write values to an Excel range via the COM API
 
 Transport: MCP protocol 2024-11-05 over SSE (GET /sse + POST /message).
@@ -254,6 +255,9 @@ class PyXLLMCPServer:
             elif tool_name == "pyxll_read_range":
                 text = self._tool_read_range(args.get("ref"), args.get("sheet"))
                 is_error = text.startswith("ERROR:")
+            elif tool_name == "pyxll_read_formulas":
+                text = self._tool_read_formulas(args.get("ref"), args.get("sheet"))
+                is_error = text.startswith("ERROR:")
             elif tool_name == "pyxll_write_range":
                 text = self._tool_write_range(
                     args.get("ref"), args.get("values", []), args.get("sheet")
@@ -363,6 +367,31 @@ class PyXLLMCPServer:
                 ws = xl.Sheets(sheet) if sheet else xl.ActiveSheet
                 v = ws.Range(ref).Value2
                 # Value2 returns a scalar for a single cell, tuple-of-tuples otherwise.
+                if not isinstance(v, tuple):
+                    v = ((v,),)
+                result[0] = json.dumps([list(row) for row in v])
+            except Exception:
+                result[0] = "ERROR: " + traceback.format_exc()
+            finally:
+                done.set()
+
+        pyxll.schedule_call(_do_read)
+        done.wait(timeout=15)
+
+        if result[0] is None:
+            return "ERROR: read timed out"
+        return result[0]
+
+    def _tool_read_formulas(self, ref: str, sheet: str | None) -> str:
+        """Read cell formulas (Formula2) from an Excel range; return JSON 2-D list."""
+        result: list[Any] = [None]
+        done = threading.Event()
+
+        def _do_read():
+            try:
+                xl = xl_app()
+                ws = xl.Sheets(sheet) if sheet else xl.ActiveSheet
+                v = ws.Range(ref).Formula2
                 if not isinstance(v, tuple):
                     v = ((v,),)
                 result[0] = json.dumps([list(row) for row in v])
@@ -502,6 +531,30 @@ _TOOLS = [
         "description": (
             "Read cell values from an Excel worksheet. "
             "Returns a JSON-encoded 2-D list (list of rows). "
+            "Single cells return [[value]]."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "A1 range reference, e.g. 'A1' or 'B2:D5'.",
+                },
+                "sheet": {
+                    "type": "string",
+                    "description": "Worksheet name, e.g. 'Sheet1'. Omit to use the active sheet.",
+                },
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "pyxll_read_formulas",
+        "description": (
+            "Read cell formulas from an Excel worksheet using the Formula2 property. "
+            "Returns a JSON-encoded 2-D list (list of rows). "
+            "Formula cells return the formula string (e.g. '=SUM(A1:A10)'); "
+            "non-formula cells return the raw value. "
             "Single cells return [[value]]."
         ),
         "inputSchema": {
