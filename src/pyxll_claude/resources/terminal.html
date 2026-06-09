@@ -87,11 +87,24 @@
                 term.write(buf);
             });
 
-            // Intercept Ctrl+C / Ctrl+V for clipboard before xterm sees them.
+            // Intercept Ctrl+C / Ctrl+V for clipboard and Shift+Enter for newline.
             // Ctrl+C: copy selection if present, otherwise fall through to SIGINT.
             // Ctrl+V: paste from system clipboard via Qt bridge.
+            // Shift+Enter: send kitty-protocol escape sequence so claude inserts a
+            //   newline instead of submitting. xterm.js may still emit \r via onData
+            //   even when the handler returns false, so we track the flag and drop
+            //   the duplicate \r in the onData handler below.
+            let shiftEnterSent = false;
+
             term.attachCustomKeyEventHandler(function(event) {
-                if (event.type !== 'keydown' || !event.ctrlKey) return true;
+                if (event.type !== 'keydown') return true;
+                if (event.shiftKey && event.key === 'Enter') {
+                    shiftEnterSent = true;
+                    bridge.receiveInput('\x1b[13;2u');
+                    return false;
+                }
+                shiftEnterSent = false;
+                if (!event.ctrlKey) return true;
                 if (event.key === 'c') {
                     const sel = term.getSelection();
                     if (sel) {
@@ -108,8 +121,15 @@
                 return true;
             });
 
-            // Keyboard input and paste → Python → PTY stdin
+            // Keyboard input → Python → PTY stdin.
+            // Drop \r when it follows a Shift+Enter we already handled — xterm.js
+            // sometimes emits \r via onData even when the custom handler returns false.
             term.onData(function(data) {
+                if (shiftEnterSent && data === '\r') {
+                    shiftEnterSent = false;
+                    return;
+                }
+                shiftEnterSent = false;
                 bridge.receiveInput(data);
             });
 
