@@ -16,10 +16,6 @@ _log = logging.getLogger(__name__)
 @xl_on_open
 def on_open(import_info):
     """Called by PyXLL after all modules have been imported."""
-    for module_name, module, exc_info in import_info:
-        if module is None:
-            exc_type, exc_value, _ = exc_info
-            _log.error("pyxll_claude: error loading '%s': %s", module_name, exc_value)
     _log.info("pyxll_claude loaded successfully.")
 
 
