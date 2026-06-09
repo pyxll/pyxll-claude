@@ -22,4 +22,4 @@ ribbon = "pyxll_claude:pyxll_ribbon"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pyxll_claude = ["resources/ribbon.xml", "resources/terminal.html", "resources/claude.png"]
+pyxll_claude = ["resources/ribbon.xml", "resources/terminal.html", "resources/editor.html", "resources/claude.png"]

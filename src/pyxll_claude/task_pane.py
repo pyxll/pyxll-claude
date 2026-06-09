@@ -4,9 +4,10 @@ PySide6 Custom Task Pane hosting the Claude AI terminal.
 Layout — a QTabWidget with two tabs:
 
   Terminal   — the xterm.js QWebEngineView connected to the claude PTY.
-  Functions  — read-only viewer for pyxll_claude_functions.py in the workspace, plus
-               a Load Functions button that imports/reloads the module and
-               calls pyxll.rebind() to register changes with Excel.
+  Functions  — Monaco (VS Code) editor for pyxll_claude_functions.py in the workspace.
+               Tab title shows "Functions *" when there are unsaved edits.  Ctrl+S saves
+               the file and automatically reloads functions via pyxll.rebind().
+               The Load Functions button below is a manual fallback.
 
 Startup sequence:
   1. ClaudeTerminalWidget opens; QWebEngineView loads terminal.html.
@@ -26,14 +27,13 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QFileSystemWatcher, QObject, QUrl, Signal, Slot
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget,
 )
 
 from pyxll import create_ctp, CTPDockPositionRight, get_config, rebind
@@ -88,8 +88,57 @@ _C = "\x1b[36m"
 
 
 # ---------------------------------------------------------------------------
-# Qt/JS bridge
+# Qt/JS bridges
 # ---------------------------------------------------------------------------
+
+class CodeEditorBridge(QObject):
+    """QWebChannel bridge registered as 'editorBridge' in the Monaco editor page.
+
+    Signals (Python → JS):
+        loadContent(str)  — set editor text and update the saved baseline
+        markSaved()       — advance the saved baseline to the current editor text
+
+    Slots (JS → Python):
+        editorReady()          — Monaco has initialised; flush any buffered content
+        setDirty(bool)         — editor dirty-state changed
+        saveContent(str)       — user pressed Ctrl+S; text is the current editor value
+    """
+
+    loadContent  = Signal(str)
+    markSaved    = Signal()
+    requestSave  = Signal()   # → JS: ask the editor to call saveContent with current text
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ready           = False
+        self._pending_content = None
+        self.on_dirty_changed = None   # callable(bool)
+        self.on_save          = None   # callable(str)
+
+    def set_content(self, text: str):
+        """Push new content to the editor from Python."""
+        if self._ready:
+            self.loadContent.emit(text)
+        else:
+            self._pending_content = text
+
+    @Slot()
+    def editorReady(self):
+        self._ready = True
+        if self._pending_content is not None:
+            self.loadContent.emit(self._pending_content)
+            self._pending_content = None
+
+    @Slot(bool)
+    def setDirty(self, dirty: bool):
+        if self.on_dirty_changed:
+            self.on_dirty_changed(dirty)
+
+    @Slot(str)
+    def saveContent(self, text: str):
+        if self.on_save:
+            self.on_save(text)
+
 
 class TerminalBridge(QObject):
     """QWebChannel bridge registered as 'bridge' in the xterm.js page.
@@ -225,9 +274,11 @@ class ClaudeTerminalWidget(QWidget):
         self._process   = ClaudeProcess(self)
         self._workspace = None
         self._watcher   = None
+        self._skip_next_watcher = False
+        self._editor_dirty      = False
         # These are set by _build_functions_tab() and used by later methods.
-        self._functions_view = None
-        self._status_label   = None
+        self._editor_bridge = None
+        self._status_label  = None
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -287,18 +338,25 @@ class ClaudeTerminalWidget(QWidget):
     def _build_functions_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        self._functions_view = QTextEdit(container)
-        self._functions_view.setReadOnly(True)
-        font = QFont("Cascadia Code, Consolas, Courier New, monospace")
-        font.setPointSize(10)
-        self._functions_view.setFont(font)
-        self._functions_view.setPlaceholderText(
-            "pyxll_claude_functions.py will appear here once the workspace is configured."
+        view = QWebEngineView(container)
+        settings = view.page().settings()
+        settings.setAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
-        layout.addWidget(self._functions_view)
 
+        channel = QWebChannel(self)
+        self._editor_bridge = CodeEditorBridge(self)
+        self._editor_bridge.on_dirty_changed = self._on_editor_dirty_changed
+        self._editor_bridge.on_save          = self._on_editor_save
+        channel.registerObject("editorBridge", self._editor_bridge)
+        view.page().setWebChannel(channel)
+
+        html_path = Path(__file__).parent / "resources" / "editor.html"
+        view.setUrl(QUrl.fromLocalFile(str(html_path)))
+
+        layout.addWidget(view)
         return container
 
     # ------------------------------------------------------------------
@@ -315,22 +373,46 @@ class ClaudeTerminalWidget(QWidget):
         self._watcher.fileChanged.connect(self._on_pyxll_claude_functions_changed)
 
     def _on_pyxll_claude_functions_changed(self, path: str):
-        self._refresh_functions_view()
-        # Some editors replace the file rather than modifying it in-place;
-        # re-add the path so the watcher survives that.
+        # Re-add the path so the watcher survives editors that replace the file.
         if self._watcher and path not in self._watcher.files():
             self._watcher.addPath(path)
+        # Skip the event that fires immediately after our own save.
+        if self._skip_next_watcher:
+            self._skip_next_watcher = False
+            return
+        self._refresh_functions_view()
 
     def _refresh_functions_view(self):
-        if self._workspace is None or self._functions_view is None:
+        if self._workspace is None or self._editor_bridge is None:
             return
         xl_path = self._workspace / "pyxll_claude_functions.py"
         try:
-            self._functions_view.setPlainText(
-                xl_path.read_text(encoding="utf-8")
-            )
+            self._editor_bridge.set_content(xl_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            self._functions_view.setPlainText(f"# Error reading {xl_path}:\n# {exc}")
+            self._editor_bridge.set_content(f"# Error reading {xl_path}:\n# {exc}")
+
+    # ------------------------------------------------------------------
+    # Editor dirty-state and save
+    # ------------------------------------------------------------------
+
+    def _on_editor_dirty_changed(self, dirty: bool):
+        self._editor_dirty = dirty
+        self._tabs.setTabText(1, "Functions *" if dirty else "Functions")
+
+    def _on_editor_save(self, text: str):
+        if self._workspace is None:
+            self._set_status("Workspace not ready.", ok=False)
+            return
+        xl_path = self._workspace / "pyxll_claude_functions.py"
+        try:
+            self._skip_next_watcher = True
+            xl_path.write_text(text, encoding="utf-8")
+            self._editor_bridge.markSaved.emit()
+        except Exception as exc:
+            self._skip_next_watcher = False
+            self._set_status(f"Save failed: {exc}", ok=False)
+            return
+        self._on_load_functions()
 
     # ------------------------------------------------------------------
     # Load Functions button
@@ -339,6 +421,12 @@ class ClaudeTerminalWidget(QWidget):
     def _on_load_functions(self):
         if self._workspace is None:
             self._set_status("Workspace not ready.", ok=False)
+            return
+
+        # If the editor has unsaved changes, trigger a save first.  The save
+        # path calls _on_load_functions() again once the file is written.
+        if self._editor_dirty and self._editor_bridge is not None:
+            self._editor_bridge.requestSave.emit()
             return
 
         ws_str = str(self._workspace)
@@ -353,6 +441,7 @@ class ClaudeTerminalWidget(QWidget):
 
             rebind()
             self._set_status("Functions loaded successfully.", ok=True)
+            QTimer.singleShot(5000, self._clear_status)
         except Exception as exc:
             _log.error("Error loading pyxll_claude_functions", exc_info=True)
             self._set_status(str(exc), ok=False)
@@ -363,6 +452,10 @@ class ClaudeTerminalWidget(QWidget):
         colour = "#4ec9b0" if ok else "#f44747"
         self._status_label.setStyleSheet(f"color: {colour};")
         self._status_label.setText(message)
+
+    def _clear_status(self):
+        if self._status_label is not None:
+            self._status_label.setText("")
 
     # ------------------------------------------------------------------
     # Lifecycle

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1e1e; }
+    #editor { width: 100%; height: 100%; }
+    #error {
+      display: none;
+      color: #f44747;
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      padding: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div id="editor"></div>
+  <div id="error"></div>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script>
+    var bridge       = null;
+    var editor       = null;
+    var savedContent = '';
+
+    function checkDirty() {
+      if (bridge && editor) {
+        bridge.setDirty(editor.getValue() !== savedContent);
+      }
+    }
+
+    function showError(msg) {
+      document.getElementById('editor').style.display = 'none';
+      var el = document.getElementById('error');
+      el.style.display = 'block';
+      el.textContent = msg;
+    }
+
+    function initMonaco() {
+      require.config({
+        paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' }
+      });
+      require(['vs/editor/editor.main'], function () {
+        editor = monaco.editor.create(document.getElementById('editor'), {
+          value:                '',
+          language:             'python',
+          theme:                'vs-dark',
+          automaticLayout:      true,
+          fontSize:             13,
+          fontFamily:           '"Cascadia Code", Consolas, "Courier New", monospace',
+          minimap:              { enabled: false },
+          scrollBeyondLastLine: false,
+          renderWhitespace:     'selection',
+          lineNumbers:          'on',
+          tabSize:              4,
+          insertSpaces:         true,
+        });
+
+        // Ctrl+S / Cmd+S → save
+        editor.addCommand(
+          monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+          function () { bridge.saveContent(editor.getValue()); }
+        );
+
+        editor.onDidChangeModelContent(checkDirty);
+
+        // Signal Python that the editor is ready to receive content
+        bridge.editorReady();
+      });
+    }
+
+    new QWebChannel(qt.webChannelTransport, function (channel) {
+      bridge = channel.objects.editorBridge;
+
+      // Python → JS: load (or reload) file content
+      bridge.loadContent.connect(function (text) {
+        savedContent = text;
+        if (editor) {
+          var pos = editor.getPosition();
+          editor.setValue(text);
+          if (pos) editor.setPosition(pos);
+          checkDirty();
+        }
+      });
+
+      // Python → JS: file was just saved successfully — update savedContent
+      bridge.markSaved.connect(function () {
+        savedContent = editor ? editor.getValue() : savedContent;
+        checkDirty();
+      });
+
+      // Python → JS: Load Functions button was clicked while editor was dirty
+      bridge.requestSave.connect(function () {
+        if (editor) bridge.saveContent(editor.getValue());
+      });
+
+      // Dynamically inject the Monaco loader so QWebChannel is ready first
+      var script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.min.js';
+      script.onload  = initMonaco;
+      script.onerror = function () {
+        showError(
+          'Could not load Monaco editor.\n' +
+          'Check your internet connection or try reloading PyXLL.'
+        );
+      };
+      document.head.appendChild(script);
+    });
+  </script>
+</body>
+</html>
