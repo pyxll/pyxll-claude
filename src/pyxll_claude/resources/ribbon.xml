@@ -11,7 +11,7 @@
             <tab id="pyxll" label="PyXLL">
                 <group id="PyXLLClaude"
                        label="Claude AI"
-                       insertAfterMso="TabHome">
+                       insertAfter="Tools">
                     <button id="PyXLLClaudeOpenPane"
                             size="large"
                             label="Claude"
