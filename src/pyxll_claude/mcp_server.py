@@ -15,6 +15,13 @@ four tools to the claude agent:
   pyxll_read_formulas   — read cell formulas (Formula2) via the Excel COM API
   pyxll_write_range     — write values to an Excel range via the COM API
 
+plus a set of worksheet-operation tools backed by ``excel_ops`` for inspection
+(get_sheets, get_used_range, get_cell_info, get_named_ranges), single-cell writes
+(write_value, write_formula), structure (clear_range, insert_rows/columns,
+merge/unmerge_cells, add_sheet, name_range, save_workbook), formatting
+(format_cells, auto_fit_column, set_column_width, set_row_height), recalculation
+(calculate) and a visual screenshot tool (screenshot).
+
 Transport: MCP protocol 2024-11-05 over SSE (GET /sse + POST /message).
 Each SSE connection gets a session ID; POST /message?sessionId=X routes
 responses back to that session's event stream.
@@ -38,6 +45,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pyxll
 from pyxll import get_config, rebind, xl_app
+
+from . import excel_ops
 
 _log = logging.getLogger(__name__)
 
@@ -295,6 +304,89 @@ class PyXLLMCPServer:
                     args.get("ref"), args.get("values", []), args.get("sheet")
                 )
                 is_error = text != "OK"
+            elif tool_name == "pyxll_screenshot":
+                # Returns image content rather than text.
+                b64 = excel_ops.screenshot(args.get("ref"), args.get("sheet"))
+                return {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "result": {
+                        "content": [
+                            {"type": "image", "data": b64, "mimeType": "image/png"}
+                        ],
+                        "isError": False,
+                    },
+                }
+            elif tool_name == "pyxll_get_sheets":
+                text = json.dumps(excel_ops.get_sheets())
+                is_error = False
+            elif tool_name == "pyxll_get_used_range":
+                text = json.dumps(excel_ops.get_used_range(args.get("sheet")))
+                is_error = False
+            elif tool_name == "pyxll_get_cell_info":
+                text = json.dumps(excel_ops.get_cell_info(args.get("ref"), args.get("sheet")))
+                is_error = False
+            elif tool_name == "pyxll_get_named_ranges":
+                text = json.dumps(excel_ops.get_named_ranges())
+                is_error = False
+            elif tool_name == "pyxll_write_value":
+                excel_ops.write_value(args.get("ref"), args.get("value"), args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_write_formula":
+                excel_ops.write_formula(args.get("ref"), args.get("formula"), args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_clear_range":
+                excel_ops.clear_range(
+                    args.get("ref"), args.get("clear_type", "all"), args.get("sheet")
+                )
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_insert_rows":
+                excel_ops.insert_rows(
+                    int(args["row"]), int(args.get("count", 1)), args.get("sheet")
+                )
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_insert_columns":
+                excel_ops.insert_columns(
+                    args.get("column"), int(args.get("count", 1)), args.get("sheet")
+                )
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_merge_cells":
+                excel_ops.merge_cells(args.get("ref"), args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_unmerge_cells":
+                excel_ops.unmerge_cells(args.get("ref"), args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_add_sheet":
+                text = excel_ops.add_sheet(args.get("name"), args.get("after"))
+                is_error = False
+            elif tool_name == "pyxll_name_range":
+                excel_ops.name_range(args.get("name"), args.get("ref"), args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_save_workbook":
+                text = excel_ops.save_workbook(args.get("path"))
+                is_error = False
+            elif tool_name == "pyxll_format_cells":
+                options = {k: v for k, v in args.items() if k not in ("ref", "sheet")}
+                excel_ops.format_cells(args.get("ref"), options, args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_auto_fit_column":
+                excel_ops.auto_fit_column(args.get("column"), args.get("sheet"))
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_set_column_width":
+                excel_ops.set_column_width(
+                    args.get("column"), float(args["width"]), args.get("sheet")
+                )
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_set_row_height":
+                excel_ops.set_row_height(
+                    int(args["row"]), float(args["height"]), args.get("sheet")
+                )
+                text, is_error = "OK", False
+            elif tool_name == "pyxll_calculate":
+                excel_ops.calculate(
+                    args.get("scope", "workbook"), args.get("sheet"), args.get("ref")
+                )
+                text, is_error = "OK", False
             else:
                 return _jsonrpc_error(msg_id, -32602, f"Unknown tool: {tool_name}")
         except Exception:
@@ -715,6 +807,303 @@ _TOOLS = [
                 },
             },
             "required": ["ref", "values"],
+        },
+    },
+    # -- Reading / inspection ------------------------------------------------
+    {
+        "name": "pyxll_get_sheets",
+        "description": (
+            "Return a JSON list of every sheet name in the active workbook. "
+            "Use this to discover available sheets before reading or writing."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "pyxll_get_used_range",
+        "description": (
+            "Return the bounds of the populated area of a sheet as a JSON object with "
+            "'address', 'row_count', 'column_count', 'start_row' and 'start_column'. "
+            "Use this to find how much data a sheet contains before reading it all."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "pyxll_get_cell_info",
+        "description": (
+            "Return detailed information about a single cell as JSON: value, formula, "
+            "number_format, font styling, colors and dimensions. Use when you need to "
+            "inspect formatting, not just the value."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Cell reference, e.g. 'A1'."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "pyxll_get_named_ranges",
+        "description": (
+            "Return all defined names in the active workbook as a JSON list of "
+            "{'name', 'refers_to'} objects."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    # -- Writing single cells ------------------------------------------------
+    {
+        "name": "pyxll_write_value",
+        "description": "Write a single value to a cell. Returns 'OK' on success.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Cell reference, e.g. 'A1'."},
+                "value": {"description": "Value to write (string, number or boolean)."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["ref", "value"],
+        },
+    },
+    {
+        "name": "pyxll_write_formula",
+        "description": (
+            "Write a formula to a single cell, e.g. '=SUM(A1:A10)'. Returns 'OK' on success."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Cell reference, e.g. 'A1'."},
+                "formula": {"type": "string", "description": "Formula string starting with '='."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["ref", "formula"],
+        },
+    },
+    # -- Structure -----------------------------------------------------------
+    {
+        "name": "pyxll_clear_range",
+        "description": (
+            "Clear a range without deleting rows or columns. 'clear_type' selects what to "
+            "remove: 'all' (default), 'contents' (values/formulas only) or 'formats'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Range reference, e.g. 'A1:C10'."},
+                "clear_type": {
+                    "type": "string",
+                    "enum": ["all", "contents", "formats"],
+                    "description": "What to clear. Defaults to 'all'.",
+                },
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "pyxll_insert_rows",
+        "description": "Insert one or more blank rows above the given row (1-indexed). Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "row": {"type": "integer", "description": "Row number to insert above."},
+                "count": {"type": "integer", "description": "Number of rows to insert. Defaults to 1."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["row"],
+        },
+    },
+    {
+        "name": "pyxll_insert_columns",
+        "description": "Insert one or more blank columns before the given column letter. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "column": {"type": "string", "description": "Column letter to insert before, e.g. 'B'."},
+                "count": {"type": "integer", "description": "Number of columns to insert. Defaults to 1."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["column"],
+        },
+    },
+    {
+        "name": "pyxll_merge_cells",
+        "description": "Merge a range of cells into one. Useful for headers. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Range to merge, e.g. 'A1:C1'."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "pyxll_unmerge_cells",
+        "description": "Unmerge previously merged cells in a range. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Range to unmerge."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "pyxll_add_sheet",
+        "description": (
+            "Add a new worksheet to the active workbook and return its name. "
+            "Omit 'name' to let Excel choose; omit 'after' to append at the end."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Name for the new sheet."},
+                "after": {"type": "string", "description": "Insert the new sheet after this sheet."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "pyxll_name_range",
+        "description": "Create or update a workbook-level named range. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Defined name, e.g. 'Inputs'."},
+                "ref": {"type": "string", "description": "Range the name refers to, e.g. 'A1:D10'."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["name", "ref"],
+        },
+    },
+    {
+        "name": "pyxll_save_workbook",
+        "description": (
+            "Save the active workbook and return its full path. Provide 'path' to save a "
+            "copy / first-time save; omit it to save in place."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Optional path to save to."},
+            },
+            "required": [],
+        },
+    },
+    # -- Formatting ----------------------------------------------------------
+    {
+        "name": "pyxll_format_cells",
+        "description": (
+            "Apply formatting to a range. Any subset of options may be supplied: bold, "
+            "italic, underline, font_name, font_size, font_color (hex like '#FF0000'), "
+            "fill_color (hex), number_format (e.g. '#,##0.00' or '0%'), "
+            "horizontal_alignment, vertical_alignment, wrap_text, border. Returns 'OK'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Range reference, e.g. 'A1:C10'."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+                "bold": {"type": "boolean"},
+                "italic": {"type": "boolean"},
+                "underline": {"type": "boolean"},
+                "font_name": {"type": "string"},
+                "font_size": {"type": "number"},
+                "font_color": {"type": "string", "description": "Hex color, e.g. '#FF0000'."},
+                "fill_color": {"type": "string", "description": "Hex background color."},
+                "number_format": {"type": "string", "description": "Excel number format code."},
+                "horizontal_alignment": {"type": "string", "enum": ["left", "center", "right"]},
+                "vertical_alignment": {"type": "string", "enum": ["top", "center", "bottom"]},
+                "wrap_text": {"type": "boolean"},
+                "border": {"type": "boolean", "description": "Add thin borders around and inside the range."},
+            },
+            "required": ["ref"],
+        },
+    },
+    {
+        "name": "pyxll_auto_fit_column",
+        "description": "Auto-fit one or more columns to their content. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "column": {"type": "string", "description": "Column letter or range, e.g. 'A' or 'A:C'."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["column"],
+        },
+    },
+    {
+        "name": "pyxll_set_column_width",
+        "description": "Set the width of a column or column range, in character units. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "column": {"type": "string", "description": "Column letter or range, e.g. 'A' or 'A:C'."},
+                "width": {"type": "number", "description": "Width in character units."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["column", "width"],
+        },
+    },
+    {
+        "name": "pyxll_set_row_height",
+        "description": "Set the height of a row, in points. Returns 'OK'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "row": {"type": "integer", "description": "Row number (1-indexed)."},
+                "height": {"type": "number", "description": "Height in points."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": ["row", "height"],
+        },
+    },
+    # -- Calculation ---------------------------------------------------------
+    {
+        "name": "pyxll_calculate",
+        "description": (
+            "Force an Excel recalculation. 'scope' is 'workbook' (default), 'sheet' or "
+            "'range'. A natural companion to pyxll_reload_module after changing inputs "
+            "or formulas. Returns 'OK'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["workbook", "sheet", "range"],
+                    "description": "What to recalculate. Defaults to 'workbook'.",
+                },
+                "sheet": {"type": "string", "description": "Worksheet name (for scope 'sheet' or 'range')."},
+                "ref": {"type": "string", "description": "Range reference (required for scope 'range')."},
+            },
+            "required": [],
+        },
+    },
+    # -- Visual --------------------------------------------------------------
+    {
+        "name": "pyxll_screenshot",
+        "description": (
+            "Capture a range as a PNG image and return it as image content, so you can "
+            "visually inspect a sheet's layout, formatting and rendered values. Provide "
+            "'ref' to capture a specific range; omit it to capture the sheet's used range."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "Range to capture, e.g. 'A1:H20'. Omit for the whole used range."},
+                "sheet": {"type": "string", "description": "Worksheet name. Omit for the active sheet."},
+            },
+            "required": [],
         },
     },
 ]

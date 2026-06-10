@@ -129,4 +129,21 @@ pyxll-claude/
   | `pyxll_read_range` | Read cell values from a worksheet range |
   | `pyxll_read_formulas` | Read cell formulas from a worksheet range |
   | `pyxll_write_range` | Write values or formulas to a worksheet range |
+  | `pyxll_get_sheets` | List the sheet names in the active workbook |
+  | `pyxll_get_used_range` | Bounds of the populated area of a sheet |
+  | `pyxll_get_cell_info` | Value, formula, format and styling of a cell |
+  | `pyxll_get_named_ranges` | List workbook defined names |
+  | `pyxll_write_value` | Write a single value to a cell |
+  | `pyxll_write_formula` | Write a single formula to a cell |
+  | `pyxll_clear_range` | Clear contents and/or formats from a range |
+  | `pyxll_insert_rows` / `pyxll_insert_columns` | Insert blank rows or columns |
+  | `pyxll_merge_cells` / `pyxll_unmerge_cells` | Merge or unmerge a range |
+  | `pyxll_add_sheet` | Add a worksheet |
+  | `pyxll_name_range` | Create or update a named range |
+  | `pyxll_save_workbook` | Save the active workbook |
+  | `pyxll_format_cells` | Fonts, fills, borders, number formats, alignment |
+  | `pyxll_auto_fit_column` | Auto-fit column width to content |
+  | `pyxll_set_column_width` / `pyxll_set_row_height` | Set column width / row height |
+  | `pyxll_calculate` | Force a workbook, sheet or range recalculation |
+  | `pyxll_screenshot` | Capture a range as a PNG image for visual inspection |
 - **Workspace bootstrap:** `workspace.py` creates missing files on first open but never overwrites existing ones, so user edits are preserved across upgrades.

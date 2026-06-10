@@ -12,6 +12,7 @@ dependencies = [
     "PySide6",
     "pywin32>=301",
     "pywinpty>=2.0",
+    "pillow>=9.0",  # pyxll_screenshot: read CopyPicture bitmap from the clipboard
 ]
 
 [project.entry-points."pyxll"]
