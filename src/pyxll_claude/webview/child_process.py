@@ -152,12 +152,10 @@ class _IPC(QObject):
         self.send({"type": "ready", "hwnd": self._hwnd})
 
     def _on_disconnected(self) -> None:
-        # Parent closed the connection; exit gracefully.
-        parent = self.parent()
-        if isinstance(parent, QWidget):
-            parent.close()
-        QApplication.instance().quit()
-        QTimer.singleShot(500, lambda: os._exit(0))
+        # Parent closed the connection.  QWebEngine's shutdown sequence blocks
+        # the Qt event loop, so QApplication.quit() + a timer fallback never
+        # fires reliably.  The child process has no state to save, so just exit.
+        os._exit(0)
 
     def _on_error(self, _error) -> None:
         if (self._sock.state() != QLocalSocket.LocalSocketState.ConnectedState
