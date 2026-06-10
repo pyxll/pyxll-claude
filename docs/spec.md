@@ -55,8 +55,8 @@ Primary workflow:
 - `claude` is resolved via `shutil.which()`; `.cmd`/`.bat` entries are routed
   through `cmd.exe /d /c`.
 - Resize: a 150 ms debounced `ResizeObserver` fires `fitAddon.fit()` and
-  `bridge.resizeTerminal()` in the same callback so xterm.js and the PTY always
-  change size together.
+  posts `{type: "terminal_resize"}` in the same callback so xterm.js and the PTY
+  always change size together.
 
 **Out of scope in Phase 1:** function registration, Excel workbook awareness.
 
@@ -77,7 +77,7 @@ Primary workflow:
   - `.claude/settings.local.json` — pre-approved permissions.
   - `pyxll_claude_functions.py` — an empty module stub ready for `@xl_func` functions.
 - The CTP gains a second tab, **Functions**, alongside the existing **Terminal** tab.
-- The Functions tab shows a read-only viewer for `pyxll_claude_functions.py` that
+- The Functions tab shows a Monaco editor for `pyxll_claude_functions.py` that
   auto-refreshes via `QFileSystemWatcher` whenever Claude edits the file.
 - A **Load Functions** button imports or reloads `pyxll_claude_functions` from the
   workspace and calls `pyxll.rebind()` to register any `@xl_func`-decorated functions
@@ -168,15 +168,6 @@ This file is overwritten each session. `settings.local.json` opts in via
 If all ports are exhausted, a warning is logged and claude starts without MCP;
 the Load Functions button remains available.
 
-**New files:**
-- `src/pyxll_claude/mcp_server.py` — `PyXLLMCPServer` class and `find_free_port()`
-
-**Modified files:**
-- `src/pyxll_claude/task_pane.py` — background thread for MCP start, port scan,
-  `.mcp.json` write, server lifecycle
-- `src/pyxll_claude/workspace.py` — `_CLAUDE_MD` and `_SETTINGS_LOCAL_JSON`
-  templates updated; MCP permissions and `enabledMcpjsonServers` added
-
 **Out of scope in Phase 3:** real-time error streaming to the terminal;
 function listing/management UI (Phase 4).
 
@@ -200,17 +191,26 @@ function listing/management UI (Phase 4).
 
 ```
 src/pyxll_claude/
-├── __init__.py      # Entry points: pyxll_modules(), pyxll_ribbon()
-├── task_pane.py     # CTP widget, TerminalBridge, show_claude_pane()
-├── terminal.py      # ClaudeProcess — pywinpty PTY wrapper + I/O threads
-├── workspace.py     # First-run workspace initialisation
-├── mcp_server.py    # PyXLLMCPServer — HTTP/SSE MCP server + tools
-├── xl_functions.py  # PyXLL ribbon callbacks and @xl_on_open handler
+├── __init__.py           # Entry points: pyxll_modules(), pyxll_ribbon()
+├── task_pane.py          # ClaudeCustomTaskPane, show_claude_pane()
+├── claude_process.py     # ClaudeProcess — pywinpty ConPTY wrapper
+├── mcp_server.py         # PyXLLMCPServer — HTTP/SSE MCP server + tools
+├── workspace.py          # First-run workspace initialisation
+├── xl_functions.py       # PyXLL ribbon callbacks and @xl_on_open handler
+├── webview/
+│   ├── __init__.py       # Exports WebViewClient
+│   ├── client.py         # WebViewClient — parent-process widget + IPC server
+│   └── child_process.py  # Child process entry point — QWebEngineView + IPC client
+├── widgets/
+│   ├── __init__.py       # Exports ClaudeTerminalWidget, CodeEditorWidget
+│   ├── terminal.py       # ClaudeTerminalWidget — xterm.js view + Claude process
+│   └── editor.py         # CodeEditorWidget — Monaco editor view + file watcher
 └── resources/
     ├── __init__.py
     ├── ribbon.xml
-    ├── claude.png      # Ribbon button icon
-    └── terminal.html   # xterm.js page loaded by QWebEngineView
+    ├── claude.png         # Ribbon button icon
+    ├── terminal.html      # xterm.js page loaded in the terminal child process
+    └── editor.html        # Monaco editor page loaded in the editor child process
 ```
 
 ### 4.2 Entry Points
@@ -222,23 +222,98 @@ src/pyxll_claude/
 
 ### 4.3 Custom Task Pane
 
-Uses **PySide6** (Qt6) via PyXLL's `create_ctp()`. The CTP is a `QTabWidget`
-with two tabs:
+Uses **PySide6** (Qt6) via PyXLL's `create_ctp()`. The CTP is a `ClaudeCustomTaskPane`
+widget containing a `QTabWidget` with two tabs:
 
-| Tab | Contents |
-|-----|----------|
-| Terminal  | `QWebEngineView` hosting the xterm.js terminal |
-| Functions | Read-only `QTextEdit` viewer for `pyxll_claude_functions.py` + **Load Functions** button |
+| Tab | Widget | Contents |
+|-----|--------|----------|
+| Terminal  | `ClaudeTerminalWidget` | xterm.js terminal (child process) + Claude CLI process |
+| Functions | `CodeEditorWidget`      | Monaco editor (child process) + Load Functions button |
 
-A new `ClaudeTerminalWidget` is created on every `show_claude_pane()` call; the
-previous widget is destroyed by PyXLL when the pane is closed.
+A new `ClaudeCustomTaskPane` is created on every `show_claude_pane()` call. When
+the CTP is closed, `closeEvent` propagates explicitly down the widget hierarchy:
+`ClaudeCustomTaskPane` → `ClaudeTerminalWidget` / `CodeEditorWidget` → `WebViewClient`,
+ensuring all child processes are terminated in order (Claude → MCP → Chrome processes).
 
-### 4.4 Claude CLI Terminal
+### 4.4 WebView Child Process Architecture
+
+Both the xterm.js terminal and the Monaco editor run inside **separate child
+processes** rather than in the parent Excel process. Each child process hosts a
+single `QWebEngineView`.
+
+**Motivation:** Chromium's internal message pump conflicts with Excel's COM message
+pump. Re-entrant COM calls (triggered by cell recalculation and RTD functions) reach
+Chromium HWNDs that live in the same process, causing `STATUS_BREAKPOINT CHECK()`
+crashes. Running each Chromium instance in its own subprocess eliminates the shared
+message pump entirely.
+
+**Components:**
+
+| Component | Location | Role |
+|-----------|----------|------|
+| `WebViewClient` | `webview/client.py` (parent process) | Launches and manages the child process; embeds its window; relays IPC messages |
+| Child process | `webview/child_process.py` (child process) | Hosts one `QWebEngineView`; connects to parent via IPC; runs the JS bridge |
+
+**Startup sequence:**
 
 ```
-pywinpty PTY (ConPTY)  ←→  read thread → data_received signal → TerminalBridge
-                             write queue ← TerminalBridge ← QWebChannel ← xterm.js
+1. WebViewClient creates a QLocalServer (IPC) and starts child_process.py via QProcess.
+2. Child connects to the server and sends {"type": "ready", "hwnd": <HWND>}.
+3. WebViewClient embeds the child HWND via QWidget.createWindowContainer.
+4. WS_CHILD window style is applied and thread input queues are attached to Excel's
+   so keyboard events reach the embedded Chromium window.
+5. The page loads and JS posts its first application message (e.g. "start_process").
 ```
+
+**IPC protocol — newline-delimited JSON over QLocalSocket:**
+
+| Direction | Message | Purpose |
+|-----------|---------|---------|
+| Child → Parent | `{"type": "ready", "hwnd": <int>}` | HWND handshake on startup |
+| Child → Parent | `{"type": "start_process", "cols": N, "rows": N}` | xterm.js ready; start Claude |
+| Child → Parent | `{"type": "terminal_input", "text": "..."}` | Keystroke from xterm.js |
+| Child → Parent | `{"type": "terminal_resize", "cols": N, "rows": N}` | Terminal resize |
+| Child → Parent | `{"type": "editor_ready"}` | Monaco initialised |
+| Child → Parent | `{"type": "editor_dirty", "dirty": bool}` | Unsaved-change state |
+| Child → Parent | `{"type": "editor_save", "text": "..."}` | Ctrl+S content from Monaco |
+| Parent → Child | `{"type": "terminal_output", "data": "<base64>"}` | PTY bytes to xterm.js |
+| Parent → Child | `{"type": "editor_load", "text": "..."}` | File content to Monaco |
+| Parent → Child | `{"type": "editor_mark_saved"}` | Confirm save succeeded |
+| Parent → Child | `{"type": "editor_request_save"}` | Request content before Load Functions |
+
+**JS bridge (`_Bridge` in `child_process.py`):**
+
+A single general-purpose `QWebChannel` object registered as `"bridge"` in every
+web view. JS uses two methods regardless of which page is loaded:
+
+- `bridge.postMessage(jsonString)` — sends any message to the parent process.
+- `bridge.messageReceived` signal — receives any message pushed by the parent.
+
+Clipboard helpers (`copyToClipboard`, `pasteFromClipboard`) are exposed directly
+because they return a value and don't fit the fire-and-forget pattern.
+
+**Focus management:**
+
+After embedding, the child HWND is given `WS_CHILD` style so Windows uses
+child-window activation rules. A native `WM_SETFOCUS` event filter in the child
+process routes focus to the `QWebEngineView` whenever the outer window receives
+focus. `WebViewClient.showEvent` calls `SetFocus` on the child HWND whenever the
+widget becomes visible (e.g. on tab switch), replacing the need for the parent to
+manage focus explicitly.
+
+### 4.5 Claude CLI Terminal
+
+```
+pywinpty PTY (ConPTY)
+  ← write queue ← ClaudeTerminalWidget ← IPC ← bridge.postMessage ← xterm.js
+  → read thread → data_received signal → ClaudeTerminalWidget → IPC → bridge.messageReceived → xterm.js
+```
+
+`ClaudeTerminalWidget` (`widgets/terminal.py`) owns both the `WebViewClient` (xterm.js
+view) and the `ClaudeProcess` (ConPTY wrapper). When xterm.js posts `start_process`,
+`ClaudeTerminalWidget` validates the workspace, starts the MCP server and then the
+claude CLI on a background thread, and emits `workspace_ready` so `CodeEditorWidget`
+can load the functions file.
 
 **Workspace selection:** `[CLAUDE] workspace` from `pyxll.cfg`, validated and
 bootstrapped before the PTY is started. Claude Code auto-loads `CLAUDE.md` and
@@ -247,11 +322,7 @@ bootstrapped before the PTY is started. Claude Code auto-loads `CLAUDE.md` and
 **xterm.js / ConPTY compatibility:** `windowsMode: true` disables xterm.js's
 internal line-reflow so it does not conflict with ConPTY's own reflow on resize.
 
-**Resize:** a single 150 ms `ResizeObserver` callback calls `fitAddon.fit()` then
-`bridge.resizeTerminal(cols, rows)` so xterm.js and the PTY dimensions always
-change in the same tick.
-
-### 4.5 Workspace Initialisation
+### 4.6 Workspace Initialisation
 
 `workspace.ensure_workspace_initialized(path)` is called once each session before
 starting the PTY. It creates missing files but never overwrites existing ones:
@@ -264,7 +335,7 @@ starting the PTY. It creates missing files but never overwrites existing ones:
 | `.claude/settings.local.json` | Pre-approved permissions (bash, curl, file I/O, MCP tools) + `enabledMcpjsonServers` |
 | `pyxll_claude_functions.py` | Stub module with `from pyxll import xl_func` |
 
-### 4.6 Function Loading Flow
+### 4.7 Function Loading Flow
 
 **Primary path (Phase 3 — via MCP):**
 ```
@@ -280,6 +351,7 @@ Claude edits pyxll_claude_functions.py
 **Fallback path — Load Functions button:**
 ```
 User clicks Load Functions
+  → if editor is dirty: editor posts editor_request_save → Monaco saves → Load Functions retried
   → workspace added to sys.path (once)
     → importlib.reload / import_module("pyxll_claude_functions")
       → pyxll.rebind()
@@ -299,6 +371,11 @@ callable in `pyxll_claude_functions` is picked up without restarting Excel.
 | Claude backend | `claude` CLI via ConPTY | Delegates auth, model selection, and tool use to Claude Code |
 | PTY | pywinpty `PTY` class (ConPTY) | Native Windows ConPTY; better than pipe-based `QProcess` for interactive TUIs |
 | Terminal rendering | xterm.js in `QWebEngineView` | Full ANSI/VT emulation; `windowsMode: true` resolves ConPTY resize conflicts |
+| Editor rendering | Monaco editor in `QWebEngineView` | Syntax highlighting and editing for `pyxll_claude_functions.py` |
+| WebView isolation | Each `QWebEngineView` in a separate child process | Prevents Chromium's message pump from conflicting with Excel's COM message pump, eliminating `STATUS_BREAKPOINT CHECK()` crashes |
+| IPC | Newline-delimited JSON over `QLocalSocket` | Simple, low-latency; one server per `WebViewClient` instance |
+| JS bridge | Single general-purpose `_Bridge` (`postMessage` / `messageReceived`) | One bridge class works for any page; application semantics stay in the parent |
+| Focus routing | `WS_CHILD` style + `WM_SETFOCUS` filter + `WebViewClient.showEvent` | Keyboard events reach embedded Chromium correctly across process and thread boundaries |
 | Workspace folder | User-configured in `pyxll.cfg [CLAUDE]` | Separates user code from the extension; survives package upgrades |
 | First-run bootstrap | `workspace.py` creates files if absent | Zero manual setup beyond the single `pyxll.cfg` entry |
 | Function registration | MCP `pyxll_reload` tool (Phase 3) / Load Functions button (fallback) | Claude iterates autonomously; button retained for manual edits |
