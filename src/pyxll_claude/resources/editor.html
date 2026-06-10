@@ -96,6 +96,20 @@
 
         editor.onDidChangeModelContent(checkDirty);
 
+        // After any mouse selection (drag or double-click) Chromium shifts Win32
+        // focus to an internal HWND, breaking keyboard delivery.  On mouseup,
+        // defer one event-loop tick (so Chromium finishes its post-mouseup focus
+        // shuffling) then tell the parent to re-attach threads and focus
+        // Chrome_RenderWidgetHostHWND directly.
+        editor.getDomNode().addEventListener('mouseup', function() {
+          setTimeout(function() {
+            var sel = editor.getSelection();
+            if (sel && !sel.isEmpty()) {
+              bridge.postMessage(JSON.stringify({type: 'editor_selection_changed'}));
+            }
+          }, 0);
+        });
+
         // Signal Python that the editor is ready to receive content
         bridge.postMessage(JSON.stringify({type: 'editor_ready'}));
       });

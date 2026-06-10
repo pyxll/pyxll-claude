@@ -88,6 +88,8 @@ class CodeEditorWidget(QWidget):
             self._on_dirty(msg["dirty"])
         elif t == "editor_save":
             self._on_save(msg["text"])
+        elif t == "editor_selection_changed":
+            self._client.refocus_renderer()
 
     def _push_content(self) -> None:
         if self._workspace is None:

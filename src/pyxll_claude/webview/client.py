@@ -163,6 +163,37 @@ class WebViewClient(QWidget):
         if self._child_hwnd:
             _focus_foreign_hwnd(self._child_hwnd)
 
+    def refocus_renderer(self) -> None:
+        """Re-attach Chromium threads and focus Chrome_RenderWidgetHostHWND.
+
+        After a mouse text selection Chromium moves Win32 focus to an internal
+        HWND whose thread may not be in the attached set, breaking keyboard
+        delivery to the page.  Re-running attach_child_threads picks up any new
+        threads, then _focus_foreign_hwnd on the renderer HWND (re-attaching
+        the caller's thread and calling SetFocus) restores key delivery.
+        """
+        if not self._child_hwnd or not self._xl_hwnd:
+            return
+        self.attach_child_threads()
+
+        user32 = ctypes.windll.user32
+        renderer_hwnd = [0]
+
+        def _cb(hwnd: int, _lparam: int) -> bool:
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, buf, 256)
+            if buf.value == "Chrome_RenderWidgetHostHWND":
+                renderer_hwnd[0] = hwnd
+                return False
+            return True
+
+        _EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_ssize_t)
+        user32.EnumChildWindows(self._child_hwnd, _EnumProc(_cb), 0)
+
+        target = renderer_hwnd[0] or self._child_hwnd
+        _log.debug("refocus_renderer: targeting hwnd=0x%x", target)
+        _focus_foreign_hwnd(target)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if self._child_hwnd:
