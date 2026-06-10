@@ -38,6 +38,9 @@ In particular, before suggesting a workaround for unexpected PyXLL behaviour,
 check the docs first — PyXLL often has a built-in decorator parameter or
 config setting that solves the problem directly.
 
+Use `/fetch-pyxll-docs` for all PyXLL documentation lookups — including release
+notes, changelog, and version history. Do not guess PyXLL documentation URLs directly.
+
 ## PyXLL MCP Tools
 
 Use these tools proactively — do not ask the user to perform these actions manually:
