@@ -13,6 +13,7 @@ import logging
 import sys
 from pathlib import Path
 
+import pyxll
 from pyxll import get_config
 
 _log = logging.getLogger(__name__)
@@ -28,14 +29,18 @@ def pyxll_modules():
     modules = ["pyxll_claude.xl_functions"]
 
     try:
-        workspace = Path(get_config().get("CLAUDE", "workspace").strip())
+        value = get_config().get("CLAUDE", "workspace").strip()
+        workspace = Path(value) if value else None
     except (configparser.NoSectionError, configparser.NoOptionError):
         workspace = None
     except Exception:
         _log.warning("pyxll_claude: could not read [CLAUDE] workspace from pyxll.cfg", exc_info=True)
         workspace = None
 
-    if workspace is not None and (workspace / "pyxll_claude_functions.py").exists():
+    if workspace is None:
+        workspace = Path(pyxll.__file__).parent / "pyxll_claude_workspace"
+
+    if (workspace / "pyxll_claude_functions.py").exists():
         ws_str = str(workspace)
         if ws_str not in sys.path:
             sys.path.insert(0, ws_str)

@@ -13,6 +13,7 @@ import logging
 import threading
 from pathlib import Path
 
+import pyxll
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
@@ -38,16 +39,31 @@ _C = "\x1b[36m"
 # Config helpers
 # ---------------------------------------------------------------------------
 
-def _get_workspace() -> Path | None:
-    """Return the workspace path from pyxll.cfg [CLAUDE] → workspace, or None."""
+def _get_workspace() -> Path:
+    """Return the workspace path, creating it if necessary.
+
+    Uses [CLAUDE] workspace from pyxll.cfg; falls back to a 'pyxll_claude_workspace'
+    folder next to the PyXLL add-in.
+    """
+    path = None
     try:
         value = get_config().get("CLAUDE", "workspace").strip()
-        return Path(value) if value else None
+        if value:
+            path = Path(value)
     except (configparser.NoSectionError, configparser.NoOptionError):
-        return None
+        pass
     except Exception:
         _log.warning("Failed to read [CLAUDE] workspace from pyxll.cfg", exc_info=True)
-        return None
+
+    if path is None:
+        path = Path(pyxll.__file__).parent / "pyxll_claude_workspace"
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _log.warning("Could not create workspace folder: %s", path, exc_info=True)
+
+    return path
 
 
 def _get_mcp_enabled() -> bool:
@@ -144,19 +160,14 @@ class ClaudeTerminalWidget(QWidget):
         self._client.focus_child()
 
         workspace = _get_workspace()
-        if workspace is None:
-            self.write(
-                f"\r\n{_Y}{_B}Claude workspace not configured.{_R}\r\n\r\n"
-                f"Add the following to your {_B}pyxll.cfg{_R} and reload PyXLL:\r\n\r\n"
-                f"  {_C}[CLAUDE]\r\n"
-                f"  workspace = C:\\path\\to\\your\\workspace{_R}\r\n"
-            )
-            return
         if not workspace.exists():
             self.write(
-                f"\r\n{_Y}{_B}Claude workspace folder not found.{_R}\r\n\r\n"
-                f"Configured path:\r\n  {_C}{workspace}{_R}\r\n\r\n"
-                f"Create the folder or update {_B}pyxll.cfg{_R}, then reload PyXLL.\r\n"
+                f"\r\n{_Y}{_B}Claude workspace folder does not exist and could not be created.{_R}\r\n\r\n"
+                f"Attempted path:\r\n  {_C}{workspace}{_R}\r\n\r\n"
+                f"Either create the folder manually or set the path in {_B}pyxll.cfg{_R}:\r\n\r\n"
+                f"  {_C}[CLAUDE]\r\n"
+                f"  workspace = C:\\path\\to\\your\\workspace{_R}\r\n\r\n"
+                f"Then reload PyXLL.\r\n"
             )
             return
         warnings = ensure_workspace_initialized(workspace)
