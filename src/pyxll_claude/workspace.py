@@ -12,15 +12,46 @@ Skills are always synced to the current package version:
 
   .claude/skills/<skill>/...                                   — mirrored from resources/workspace/skills/
 """
+import configparser
 import logging
 import stat
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
+import pyxll
+from pyxll import get_config
+
 _log = logging.getLogger(__name__)
 
 _WORKSPACE_RES = "pyxll_claude.resources"
+
+
+def get_workspace_path() -> Path:
+    """Return the workspace path from pyxll.cfg, creating the directory if needed.
+
+    Uses [CLAUDE] workspace; falls back to a 'pyxll_claude_workspace' folder
+    next to the PyXLL add-in.
+    """
+    path = None
+    try:
+        value = get_config().get("CLAUDE", "workspace").strip()
+        if value:
+            path = Path(value)
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        pass
+    except Exception:
+        _log.warning("Failed to read [CLAUDE] workspace from pyxll.cfg", exc_info=True)
+
+    if path is None:
+        path = Path(pyxll.__file__).parent / "pyxll_claude_workspace"
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        _log.warning("Could not create workspace folder: %s", path, exc_info=True)
+
+    return path
 
 # Files copied once on first run (never overwritten).
 _ONCE_FILES: list[tuple[str, str]] = [

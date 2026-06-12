@@ -7,22 +7,19 @@ claude CLI once xterm.js reports its initial size, then emits workspace_ready
 so the parent pane can initialise dependent widgets.
 """
 import base64
-import configparser
-import json
 import logging
 import threading
 from pathlib import Path
 
-import pyxll
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from pyxll import get_config
 
 from ..claude_process import ClaudeProcess
-from ..mcp_server import PyXLLMCPServer, find_free_port
+from ..mcp_server import get_or_start_global, write_mcp_json
 from ..webview import WebViewClient
-from ..workspace import ensure_workspace_initialized
+from ..workspace import ensure_workspace_initialized, get_workspace_path
 
 _log = logging.getLogger(__name__)
 
@@ -38,33 +35,6 @@ _C = "\x1b[36m"
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
-
-def _get_workspace() -> Path:
-    """Return the workspace path, creating it if necessary.
-
-    Uses [CLAUDE] workspace from pyxll.cfg; falls back to a 'pyxll_claude_workspace'
-    folder next to the PyXLL add-in.
-    """
-    path = None
-    try:
-        value = get_config().get("CLAUDE", "workspace").strip()
-        if value:
-            path = Path(value)
-    except (configparser.NoSectionError, configparser.NoOptionError):
-        pass
-    except Exception:
-        _log.warning("Failed to read [CLAUDE] workspace from pyxll.cfg", exc_info=True)
-
-    if path is None:
-        path = Path(pyxll.__file__).parent / "pyxll_claude_workspace"
-
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        _log.warning("Could not create workspace folder: %s", path, exc_info=True)
-
-    return path
-
 
 def _get_mcp_enabled() -> bool:
     """Return False if [CLAUDE] mcp_enabled = false in pyxll.cfg, True otherwise."""
@@ -101,7 +71,6 @@ class ClaudeTerminalWidget(QWidget):
 
     def __init__(self, xl_hwnd: int = 0, parent=None):
         super().__init__(parent)
-        self._mcp_server   = None
         self._is_destroyed = False
 
         self._client = WebViewClient(
@@ -159,7 +128,7 @@ class ClaudeTerminalWidget(QWidget):
         self._client.attach_child_threads()
         self._client.focus_child()
 
-        workspace = _get_workspace()
+        workspace = get_workspace_path()
         if not workspace.exists():
             self.write(
                 f"\r\n{_Y}{_B}Claude workspace folder does not exist and could not be created.{_R}\r\n\r\n"
@@ -187,31 +156,15 @@ class ClaudeTerminalWidget(QWidget):
 
         if _get_mcp_enabled():
             port_start, port_end = _get_mcp_port_range()
-            port = find_free_port(port_start, port_end)
-            if port is not None:
-                if self._is_destroyed:
-                    return
-                server = PyXLLMCPServer(workspace=workspace, port=port)
-                if server.start():
-                    if self._is_destroyed:
-                        server.stop()
-                        return
-                    self._mcp_server = server
-                    mcp_json = workspace / ".mcp.json"
-                    mcp_json.write_text(
-                        json.dumps(
-                            {"mcpServers": {"pyxll": {
-                                "type": "streamable-http",
-                                "url": f"http://localhost:{port}/mcp",
-                            }}},
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                else:
-                    _log.warning("MCP server failed to bind port %d", port)
+            result = get_or_start_global(workspace, port_start, port_end)
+            if result is not None:
+                _, port = result
+                write_mcp_json(workspace, port)
             else:
                 _log.warning("No free MCP port in range %d–%d", port_start, port_end)
+
+        if self._is_destroyed:
+            return
 
         self._process.start(cols=cols, rows=rows, workspace=workspace)
         self.workspace_ready.emit(str(workspace))  # queued → main thread
@@ -225,16 +178,12 @@ class ClaudeTerminalWidget(QWidget):
             return
         self._is_destroyed = True
 
-        # Stop the Claude CLI first so it disconnects from the MCP server
-        # before the server stops.
+        # Stop the Claude CLI so it disconnects from the MCP server cleanly.
+        # The MCP server itself is a process-level singleton and is not stopped here.
         if hasattr(self, "_process") and self._process:
             self._process.terminate()
             if not self._process.wait(5.0):
                 _log.warning("ClaudeProcess failed to stop gracefully")
-
-        if self._mcp_server:
-            self._mcp_server.stop()
-            self._mcp_server = None
 
     def closeEvent(self, event) -> None:
         self._cleanup()

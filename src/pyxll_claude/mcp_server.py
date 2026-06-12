@@ -40,6 +40,10 @@ _log = logging.getLogger(__name__)
 
 _MCP_VERSION = "2025-03-26"
 
+# Key used in sys.modules to persist the singleton across PyXLL reloads.
+# Module-level globals reset on reimport; sys.modules survives.
+_REGISTRY_KEY = "__pyxll_mcp_registry__"
+
 
 # ---------------------------------------------------------------------------
 # Public helper — port discovery
@@ -506,6 +510,89 @@ def _get_log_path() -> Path:
     except Exception:
         _log.warning("_get_log_path: could not read log path from pyxll config", exc_info=True)
         return Path(os.environ.get("APPDATA", "")) / "PyXLL" / "pyxll.log"
+
+
+# ---------------------------------------------------------------------------
+# Global singleton — one server per Excel process, survives PyXLL reloads
+# ---------------------------------------------------------------------------
+
+def _registry() -> dict:
+    """Return the process-level registry dict, creating it on first call."""
+    reg = sys.modules.get(_REGISTRY_KEY)
+    if reg is None:
+        reg = {"server": None, "port": None, "lock": threading.Lock(), "on_change": None}
+        sys.modules[_REGISTRY_KEY] = reg
+    return reg
+
+
+def get_global_port() -> "int | None":
+    """Return the port the global MCP server is listening on, or None."""
+    return _registry().get("port")
+
+
+def set_on_server_change(fn) -> None:
+    """Register a callback invoked (on the main thread) when the server starts or stops."""
+    _registry()["on_change"] = fn
+
+
+def get_or_start_global(
+    workspace: Path,
+    port_start: int = 54717,
+    port_end: int = 54816,
+) -> "tuple[PyXLLMCPServer, int] | None":
+    """Return the running global MCP server, starting one if needed.
+
+    Returns (server, port) on success, None if no free port was found.
+    Thread-safe; at most one server is ever started.
+    """
+    reg = _registry()
+    on_change = None
+    with reg["lock"]:
+        if reg["server"] is not None:
+            return reg["server"], reg["port"]
+        port = find_free_port(port_start, port_end)
+        if port is None:
+            _log.warning("get_or_start_global: no free port in %d–%d", port_start, port_end)
+            return None
+        server = PyXLLMCPServer(workspace=workspace, port=port)
+        if not server.start():
+            return None
+        reg["server"] = server
+        reg["port"] = port
+        on_change = reg["on_change"]
+    if on_change is not None:
+        pyxll.schedule_call(on_change)
+    return server, port
+
+
+def stop_global() -> None:
+    """Stop the global MCP server if one is running."""
+    reg = _registry()
+    on_change = None
+    with reg["lock"]:
+        server = reg["server"]
+        if server is not None:
+            server.stop()
+            reg["server"] = None
+            reg["port"] = None
+            on_change = reg["on_change"]
+    if on_change is not None:
+        pyxll.schedule_call(on_change)
+
+
+def write_mcp_json(workspace: Path, port: int) -> None:
+    """Write .mcp.json into the workspace pointing at the local MCP server."""
+    mcp_json = workspace / ".mcp.json"
+    mcp_json.write_text(
+        json.dumps(
+            {"mcpServers": {"pyxll": {
+                "type": "streamable-http",
+                "url": f"http://localhost:{port}/mcp",
+            }}},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------

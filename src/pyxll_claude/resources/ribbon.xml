@@ -5,7 +5,8 @@
   PyXLL ribbon tab.
 -->
 <customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui"
-          loadImage="pyxll.load_image">
+          loadImage="pyxll.load_image"
+          onLoad="pyxll_claude.xl_functions.on_ribbon_load">
     <ribbon>
         <tabs>
             <tab id="pyxll" label="PyXLL">
@@ -19,6 +20,12 @@
                             screentip="Open Claude AI Terminal"
                             supertip="Opens the Claude AI chat terminal in a side panel. Use it to ask questions, generate Python functions, and interact with your spreadsheet data."
                             onAction="pyxll_claude.xl_functions.open_claude_pane"/>
+                    <dynamicMenu id="PyXLLMCPServer"
+                                 size="normal"
+                                 label="MCP Server"
+                                 getImage="pyxll_claude.xl_functions.get_mcp_button_image"
+                                 getScreentip="pyxll_claude.xl_functions.get_mcp_button_screentip"
+                                 getContent="pyxll_claude.xl_functions.get_mcp_menu_content"/>
                 </group>
             </tab>
         </tabs>
