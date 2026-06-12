@@ -1,5 +1,5 @@
 """
-Minimal MCP (Model Context Protocol) server over HTTP/SSE.
+Minimal MCP (Model Context Protocol) server over Streamable HTTP.
 
 Runs in a background daemon thread inside Excel's Python process and exposes
 four tools to the claude agent:
@@ -15,9 +15,9 @@ four tools to the claude agent:
   pyxll_read_formulas   — read cell formulas (Formula2) via the Excel COM API
   pyxll_write_range     — write values to an Excel range via the COM API
 
-Transport: MCP protocol 2024-11-05 over SSE (GET /sse + POST /message).
-Each SSE connection gets a session ID; POST /message?sessionId=X routes
-responses back to that session's event stream.
+Transport: MCP protocol 2025-03-26 Streamable HTTP (POST /mcp).
+Each request is a self-contained JSON-RPC call; responses are returned
+directly in the HTTP response body as application/json.
 """
 import http.server
 import importlib
@@ -25,23 +25,20 @@ import io
 import json
 import logging
 import os
-import queue
 import socket
 import sys
 import threading
 import traceback
-import uuid
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import pyxll
 from pyxll import get_config, rebind, xl_app
 
 _log = logging.getLogger(__name__)
 
-_MCP_VERSION = "2024-11-05"
+_MCP_VERSION = "2025-03-26"
 
 
 # ---------------------------------------------------------------------------
@@ -85,8 +82,6 @@ class PyXLLMCPServer:
         self._port = port
         self._server: http.server.HTTPServer | None = None
         self._thread: threading.Thread | None = None
-        self._sessions: dict[str, queue.Queue] = {}
-        self._sessions_lock = threading.Lock()
 
     def start(self) -> bool:
         """Bind the server and start the background thread.
@@ -114,9 +109,6 @@ class PyXLLMCPServer:
 
     def stop(self) -> None:
         if self._server:
-            with self._sessions_lock:
-                for q in self._sessions.values():
-                    q.put(None)
             self._server.shutdown()
             self._server = None
             _log.debug("PyXLL MCP server stopped")
@@ -133,67 +125,29 @@ class PyXLLMCPServer:
                 _log.debug("MCP %s " + fmt, self.address_string(), *args)
 
             def do_GET(self):  # noqa: N802
-                path = self.path.split("?")[0]
-                if path == "/sse":
-                    self._handle_sse()
-                elif path == "/health":
+                if self.path.split("?")[0] == "/health":
                     self._send_json({"status": "ok"})
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
 
             def do_POST(self):  # noqa: N802
-                if self.path.split("?")[0] == "/message":
-                    self._handle_message()
+                if self.path.split("?")[0] == "/mcp":
+                    self._handle_mcp()
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
 
-            # -- SSE stream -----------------------------------------------
+            def do_DELETE(self):  # noqa: N802
+                # Session termination — acknowledged but we have no state to clean up.
+                if self.path.split("?")[0] == "/mcp":
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND)
 
-            def _handle_sse(self):
-                session_id = str(uuid.uuid4())
-                q: queue.Queue = queue.Queue()
-                with server_ref._sessions_lock:
-                    server_ref._sessions[session_id] = q
+            # -- Streamable HTTP ------------------------------------------
 
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-
-                # Tell the client where to POST messages for this session.
-                self._write_sse("endpoint", f"/message?sessionId={session_id}")
-
-                try:
-                    while True:
-                        try:
-                            data = q.get(timeout=15)
-                        except queue.Empty:
-                            # Heartbeat keeps the TCP connection alive.
-                            self.wfile.write(b": heartbeat\n\n")
-                            self.wfile.flush()
-                            continue
-                        if data is None:  # shutdown signal
-                            break
-                        self._write_sse("message", data)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                finally:
-                    with server_ref._sessions_lock:
-                        server_ref._sessions.pop(session_id, None)
-
-            def _write_sse(self, event: str, data: str) -> None:
-                msg = f"event: {event}\ndata: {data}\n\n".encode()
-                self.wfile.write(msg)
-                self.wfile.flush()
-
-            # -- Incoming JSON-RPC ----------------------------------------
-
-            def _handle_message(self):
-                qs = parse_qs(urlparse(self.path).query)
-                session_id = qs.get("sessionId", [None])[0]
-
+            def _handle_mcp(self):
                 length = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(length)
 
@@ -203,24 +157,29 @@ class PyXLLMCPServer:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid JSON")
                     return
 
-                # Acknowledge immediately; response travels via SSE.
-                self.send_response(HTTPStatus.ACCEPTED)
-                self.end_headers()
+                # Notifications have no id and expect no response body.
+                method = msg.get("method", "")
+                if method.startswith("notifications/") or "id" not in msg:
+                    self.send_response(HTTPStatus.ACCEPTED)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    return
 
                 response = server_ref._dispatch(msg)
-                if response is not None:
-                    with server_ref._sessions_lock:
-                        q = server_ref._sessions.get(session_id)
-                    if q:
-                        q.put(json.dumps(response))
-                    else:
-                        _log.warning("MCP: no SSE session for sessionId=%s", session_id)
+                if response is None:
+                    self.send_response(HTTPStatus.ACCEPTED)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    return
+
+                self._send_json(response)
 
             def _send_json(self, data: dict) -> None:
                 body = json.dumps(data).encode()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body)
 

@@ -201,8 +201,8 @@ class ClaudeTerminalWidget(QWidget):
                     mcp_json.write_text(
                         json.dumps(
                             {"mcpServers": {"pyxll": {
-                                "type": "sse",
-                                "url": f"http://localhost:{port}/sse",
+                                "type": "streamable-http",
+                                "url": f"http://localhost:{port}/mcp",
                             }}},
                             indent=2,
                         ),
