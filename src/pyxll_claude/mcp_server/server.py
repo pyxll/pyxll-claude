@@ -207,17 +207,21 @@ class PyXLLMCPServer:
             result = tools.call_tool(tool_name, args, ctx)
             if result is None:
                 return _jsonrpc_error(msg_id, -32602, f"Unknown tool: {tool_name}")
-            text, is_error = result
+            content_or_text, is_error = result
+            if isinstance(content_or_text, str):
+                content = [{"type": "text", "text": content_or_text}]
+            else:
+                content = content_or_text
         except Exception:
-            text = traceback.format_exc()
+            content = [{"type": "text", "text": traceback.format_exc()}]
             is_error = True
-            _log.error("MCP tool %s raised unexpectedly: %s", tool_name, text)
+            _log.error("MCP tool %s raised unexpectedly", tool_name, exc_info=True)
 
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
             "result": {
-                "content": [{"type": "text", "text": text}],
+                "content": content,
                 "isError": is_error,
             },
         }

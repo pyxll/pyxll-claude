@@ -31,8 +31,12 @@ def get_tools_list() -> list[dict]:
     ]
 
 
-def call_tool(name: str, args: dict, ctx: dict) -> tuple[str, bool] | None:
-    """Call a registered tool; returns (text, is_error) or None if unknown."""
+def call_tool(name: str, args: dict, ctx: dict) -> tuple[str | list[dict], bool] | None:
+    """Call a registered tool; returns (content, is_error) or None if unknown.
+
+    content is either a plain str (text) or a list of MCP content dicts
+    (e.g. [{"type": "image", "data": "<b64>", "mimeType": "image/png"}]).
+    """
     entry = _registry.get(name)
     if entry is None:
         return None
@@ -51,4 +55,5 @@ from . import (  # noqa: E402
     read_range,
     read_formulas,
     write_range,
+    screenshot,
 )
