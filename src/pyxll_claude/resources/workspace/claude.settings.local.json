@@ -12,9 +12,13 @@
       "mcp__pyxll__pyxll_get_config_path",
       "mcp__pyxll__pyxll_get_config",
       "mcp__pyxll__pyxll_get_selection",
+      "mcp__pyxll__pyxll_get_sheets",
+      "mcp__pyxll__pyxll_get_used_range",
+      "mcp__pyxll__pyxll_get_cell_info",
+      "mcp__pyxll__pyxll_get_named_ranges",
       "mcp__pyxll__pyxll_read_range",
       "mcp__pyxll__pyxll_read_formulas",
-      "mcp__pyxll__pyxll_write_range"
+      "mcp__pyxll__pyxll_screenshot"
     ]
   },
   "enabledMcpjsonServers": [
