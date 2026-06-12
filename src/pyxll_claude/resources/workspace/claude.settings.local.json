@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*/search-pyxll-docs.sh*)",
+      "Bash(curl -s https://www.pyxll.com/*)",
+      "Read(pyxll_claude_functions.py)",
+      "Write(pyxll_claude_functions.py)",
+      "mcp__pyxll__pyxll_reload_module",
+      "mcp__pyxll__pyxll_get_log",
+      "mcp__pyxll__pyxll_get_version",
+      "mcp__pyxll__pyxll_get_python_version",
+      "mcp__pyxll__pyxll_get_config_path",
+      "mcp__pyxll__pyxll_get_config",
+      "mcp__pyxll__pyxll_get_selection",
+      "mcp__pyxll__pyxll_read_range",
+      "mcp__pyxll__pyxll_read_formulas",
+      "mcp__pyxll__pyxll_write_range"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "pyxll"
+  ]
+}

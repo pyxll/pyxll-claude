@@ -1,0 +1,9 @@
+{
+  "name": "pyxll-claude",
+  "mode": "vendored",
+  "dependencies": {
+    "pyxll/pyxll-agent-skills": {
+      "version": "0.1.2"
+    }
+  }
+}

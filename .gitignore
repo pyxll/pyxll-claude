@@ -14,6 +14,8 @@ MANIFEST
 
 # Virtual environments
 .venv/
+.pyxll/
+.workspace/
 venv/
 env/
 ENV/
@@ -53,8 +55,18 @@ desktop.ini
 # PyXLL log files
 *.log
 
-# Claude Code local settings
-.claude/settings.local.json
+# AI agent settings (these are managed by tessl)
+.agents/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.junie/
+.tessl/
+.mcp.json
+
+# Skills synced from tessl at build time — do not commit
+src/pyxll_claude/resources/workspace/skills/
 
 # Secrets
 .env
