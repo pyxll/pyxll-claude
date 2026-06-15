@@ -46,11 +46,21 @@ PyXLL discovers the extension automatically via setuptools entry points — no c
 
 ## Configuration
 
-The workspace defaults to a `pyxll_claude_workspace` folder next to the PyXLL add-in. To use a different location, add a `[CLAUDE]` section to your `pyxll.cfg`:
+All settings go in a `[CLAUDE]` section of your `pyxll.cfg`. Every setting is optional.
+
+| Setting | Default | Description |
+|---|---|---|
+| `workspace` | `pyxll_claude_workspace` next to the PyXLL add-in | Path to the workspace folder that holds `pyxll_claude_functions.py`, `CLAUDE.md`, and the `.claude` directory. |
+| `mcp_port_range` | `54717-54816` | Inclusive range of ports tried in order when starting the MCP server. The first free port is used. |
+| `mcp_autostart` | `0` | Set to `1` (or `true`/`yes`) to start the MCP server automatically when Excel opens, instead of requiring a manual click on the ribbon button. |
+
+Example:
 
 ```ini
 [CLAUDE]
 workspace = C:\path\to\your\workspace
+mcp_port_range = 54717-54816
+mcp_autostart = 1
 ```
 
 The workspace folder is created and bootstrapped automatically on first open. It will contain:

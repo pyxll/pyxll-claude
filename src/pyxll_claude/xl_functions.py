@@ -171,10 +171,33 @@ def show_mcp_endpoint(control=None) -> None:
 # PyXLL hooks and menu entries
 # ---------------------------------------------------------------------------
 
+def _is_mcp_autostart() -> bool:
+    try:
+        from pyxll import get_config
+        value = get_config().get("CLAUDE", "mcp_autostart").strip().lower()
+        return value in ("1", "true", "yes")
+    except Exception:
+        return False
+
+
 @xl_on_open
 def on_open(import_info):
     """Called by PyXLL after all modules have been imported."""
     _log.info("pyxll_claude loaded successfully.")
+    if _is_mcp_autostart():
+        try:
+            workspace = get_workspace_path()
+            ensure_workspace_initialized(workspace)
+            port_start, port_end = _get_mcp_port_range()
+            result = get_or_start_global(workspace, port_start, port_end)
+            if result is None:
+                _log.error("MCP autostart failed: no free port found in configured range.")
+            else:
+                _, port = result
+                write_mcp_json(workspace, port)
+                _log.info("MCP server auto-started on port %d.", port)
+        except Exception:
+            _log.error("MCP autostart failed", exc_info=True)
 
 
 def open_claude_pane(control=None):
