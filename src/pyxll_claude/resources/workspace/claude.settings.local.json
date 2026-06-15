@@ -18,7 +18,8 @@
       "mcp__pyxll__pyxll_get_named_ranges",
       "mcp__pyxll__pyxll_read_range",
       "mcp__pyxll__pyxll_read_formulas",
-      "mcp__pyxll__pyxll_screenshot"
+      "mcp__pyxll__pyxll_screenshot",
+      "mcp__pyxll__pyxll_is_terminal_open"
     ]
   },
   "enabledMcpjsonServers": [

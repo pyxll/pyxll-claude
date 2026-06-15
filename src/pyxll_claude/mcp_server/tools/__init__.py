@@ -51,6 +51,8 @@ def call_tool(name: str, args: dict, ctx: dict) -> tuple[str | list[dict], bool]
 # present to ensure _registry is always fully populated.
 _SUBMODULES = [
     "reload_module",
+    "reload_addin",
+    "is_terminal_open",
     "get_log",
     "get_config_path",
     "get_version",

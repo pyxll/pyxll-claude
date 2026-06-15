@@ -18,6 +18,7 @@ Layout:
 import importlib
 import logging
 import sys
+import weakref
 
 from PySide6.QtCore import QTimer, Slot
 from PySide6.QtWidgets import (
@@ -142,10 +143,23 @@ class ClaudeCustomTaskPane(QWidget):
 # Entry point called by the ribbon button
 # ---------------------------------------------------------------------------
 
+_active_pane: "weakref.ref[ClaudeCustomTaskPane] | None" = None
+
+
 def show_claude_pane():
     """Create and display the Claude AI custom task pane in Excel."""
+    global _active_pane
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
     ctp_widget = ClaudeCustomTaskPane()
     create_ctp(ctp_widget, width=800, position=CTPDockPositionRight)
+    _active_pane = weakref.ref(ctp_widget)
+
+
+def is_claude_pane_open() -> bool:
+    """Return True if the Claude terminal task pane is currently open."""
+    if _active_pane is None:
+        return False
+    pane = _active_pane()
+    return pane is not None and pane.isVisible()

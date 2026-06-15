@@ -25,7 +25,17 @@ Use these tools proactively — do not ask the user to perform these actions man
 
 - `pyxll_reload_module(module?)` — reload a single Python module (not the full add-in)
   and rebind @xl_func functions. Defaults to `pyxll_claude_functions` when omitted.
-  Call this after every edit to `pyxll_claude_functions.py`.
+  Call this after every edit to `pyxll_claude_functions.py`. **Use this for all
+  normal function edits** — it is safe and does not close the terminal.
+- `pyxll_is_terminal_open()` — returns `True` if the Claude terminal task pane is
+  currently open in Excel, `False` otherwise. Call this before `pyxll_reload_addin`
+  to decide whether to warn the user.
+- `pyxll_reload_addin()` — perform a full PyXLL add-in reload (equivalent to clicking
+  "Reload PyXLL" in the ribbon). Closes ALL custom task panes including the Claude
+  terminal. The MCP server itself survives the reload. Before calling: check
+  `pyxll_is_terminal_open` — only warn the user that the terminal will close if it
+  is actually open. Only use this when a full reload is genuinely necessary (e.g.
+  after editing `pyxll.cfg` or adding a new module to the modules list).
 - `pyxll_get_log` — whenever the user mentions the PyXLL log, asks about errors or
   warnings, or wants to see recent PyXLL activity.
 - `pyxll_get_version` — before using any PyXLL feature that specifies a minimum version
@@ -87,3 +97,9 @@ CLAUDE.md                  ← this file
   that requirement.  If it does not, use an alternative approach that works with the
   installed version, and tell the user what version would be needed for the preferred
   approach.
+- Before calling `pyxll_reload_addin`, always call `pyxll_is_terminal_open` first.
+  If it returns `True`, tell the user the terminal will close and ask them to confirm
+  before proceeding — do NOT call `pyxll_reload_addin` until the user says yes.
+  If it returns `False`, proceed without asking. Always prefer `pyxll_reload_module`
+  for everyday edits — only escalate to `pyxll_reload_addin` when
+  `pyxll_reload_module` is genuinely insufficient.
