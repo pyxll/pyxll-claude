@@ -11,7 +11,7 @@ import win32api
 from pyxll import xl_on_open, xl_menu, xl_app
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from .mcp_server import (
+from .mcp_server.server import (
     get_global_port, get_or_start_global, set_on_server_change,
     stop_global, write_mcp_json,
 )

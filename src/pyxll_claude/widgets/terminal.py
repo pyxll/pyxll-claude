@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from pyxll import get_config
 
 from ..claude_process import ClaudeProcess
-from ..mcp_server import get_or_start_global, write_mcp_json
+from ..mcp_server.server import get_or_start_global, write_mcp_json
 from ..webview import WebViewClient
 from ..workspace import ensure_workspace_initialized, get_workspace_path
 
